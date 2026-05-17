@@ -100,6 +100,12 @@ class Settings(BaseSettings):
     COGNITO_CLIENT_ID: str = Field(default="")
     COGNITO_REGION: str = Field(default="us-east-1")
 
+    # ── 飞书 ──
+    FEISHU_APP_ID: str = Field(default="")
+    FEISHU_APP_SECRET: str = Field(default="")
+    FEISHU_VERIFICATION_TOKEN: str = Field(default="")
+    FEISHU_ENCRYPT_KEY: str = Field(default="")
+
     # ── Server ──
     HOST: str = Field(default="0.0.0.0")
     PORT: int = Field(default=8000)

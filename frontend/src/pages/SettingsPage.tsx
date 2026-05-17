@@ -249,6 +249,85 @@ export default function SettingsPage() {
           ))}
         </div>
       </div>
+
+      {/* 飞书渠道配置 */}
+      <FeishuConfig />
+    </div>
+  )
+}
+
+function FeishuConfig() {
+  const [config, setConfig] = useState<any>(null)
+  const [form, setForm] = useState({ app_id: '', app_secret: '', verification_token: '' })
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    api.get('/api/feishu/config').then(r => setConfig(r.data)).catch(() => {})
+  }, [])
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      await api.post('/api/feishu/config', form)
+      toast.success('飞书配置已保存')
+      api.get('/api/feishu/config').then(r => setConfig(r.data))
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || '保存失败')
+    }
+    setSaving(false)
+  }
+
+  return (
+    <div className="card">
+      <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+        <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none"><path d="M3 12.5L12 3l9 9.5-4.5 4.5L12 12.5 7.5 17 3 12.5z" fill="#3370FF"/></svg>
+        飞书机器人
+      </h2>
+      <p className="text-xs text-gray-500 mb-4">连接飞书，通过飞书消息与AI助手对话</p>
+
+      {/* Status */}
+      <div className={`flex items-center gap-2 px-3 py-2 rounded-lg mb-4 text-xs ${
+        config?.configured
+          ? 'bg-green-900/20 border border-green-800/30 text-green-400'
+          : 'bg-gray-800/50 border border-surface-border text-gray-500'
+      }`}>
+        <span className={`w-2 h-2 rounded-full ${config?.configured ? 'bg-green-400' : 'bg-gray-600'}`} />
+        {config?.configured ? `已配置 (App: ${config.app_id})` : '未配置'}
+      </div>
+
+      {/* Config form */}
+      <div className="space-y-3">
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">App ID</label>
+          <input className="input-field text-sm" value={form.app_id} onChange={e => setForm({...form, app_id: e.target.value})}
+            placeholder="cli_xxxxxxxxxx" />
+        </div>
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">App Secret</label>
+          <input className="input-field text-sm" type="password" value={form.app_secret} onChange={e => setForm({...form, app_secret: e.target.value})}
+            placeholder="飞书应用密钥" />
+        </div>
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">Verification Token</label>
+          <input className="input-field text-sm" value={form.verification_token} onChange={e => setForm({...form, verification_token: e.target.value})}
+            placeholder="事件订阅验证Token" />
+        </div>
+        <button onClick={handleSave} disabled={saving || !form.app_id} className="btn-primary text-sm disabled:opacity-50">
+          {saving ? '保存中...' : '保存配置'}
+        </button>
+      </div>
+
+      {/* Instructions */}
+      <div className="mt-4 pt-4 border-t border-surface-border space-y-2">
+        <p className="text-[10px] text-gray-500 font-semibold">配置步骤:</p>
+        <ol className="text-[10px] text-gray-600 space-y-1 list-decimal list-inside">
+          <li>在<a href="https://open.feishu.cn/app" target="_blank" rel="noopener" className="text-primary-400 hover:underline">飞书开放平台</a>创建应用</li>
+          <li>启用"机器人"能力</li>
+          <li>配置事件订阅URL: <code className="bg-surface-hover px-1 rounded text-accent-gold">{window.location.origin}/api/feishu/webhook</code></li>
+          <li>订阅事件: <code className="bg-surface-hover px-1 rounded">im.message.receive_v1</code></li>
+          <li>在上方填入 App ID、App Secret、Verification Token</li>
+        </ol>
+      </div>
     </div>
   )
 }
