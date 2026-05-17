@@ -70,7 +70,7 @@ async def feishu_webhook(request: Request):
 
 
 async def _handle_message(event: dict):
-    """处理飞书消息: 提取文本 → 调用Agent → 回复"""
+    """处理飞书消息: 提取文本 → 发送思考状态 → 调用Agent → 回复"""
     try:
         message = event.get("message", {})
         sender = event.get("sender", {})
@@ -98,11 +98,14 @@ async def _handle_message(event: dict):
 
         print(f"[Feishu] Received: '{text[:50]}' from {sender_id}")
 
+        # Send "thinking" status immediately
+        await _reply_feishu(message_id, "🤔 正在思考中...")
+
         # Call Agent
         response = await _invoke_agent_for_feishu(text, sender_id, chat_id)
 
-        # Reply to Feishu
-        await _reply_feishu(message_id, response)
+        # Send the real response as a new message (not reply, to avoid confusion with thinking msg)
+        await _send_feishu_message(chat_id, response)
         print(f"[Feishu] Replied: {len(response)} chars")
 
     except Exception as e:
@@ -159,7 +162,10 @@ async def _invoke_agent_for_feishu(text: str, sender_id: str, chat_id: str) -> s
                     user = result.scalar_one_or_none()
 
             if not user:
-                # Fallback: first active user
+                # Fallback: find user 'pingaws' or first active user
+                result = await db.execute(select(User).where(User.username == "pingaws"))
+                user = result.scalar_one_or_none()
+            if not user:
                 result = await db.execute(select(User).where(User.is_active == True).limit(1))
                 user = result.scalar_one_or_none()
 
@@ -230,12 +236,11 @@ async def _get_tenant_access_token() -> str:
 
 
 async def _reply_feishu(message_id: str, text: str):
-    """回复飞书消息"""
+    """回复飞书消息(作为回复)"""
     import httpx
 
     token = await _get_tenant_access_token()
 
-    # Use reply API
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
             f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reply",
@@ -248,6 +253,28 @@ async def _reply_feishu(message_id: str, text: str):
         data = resp.json()
         if data.get("code") != 0:
             print(f"[Feishu] Reply failed: {data.get('msg', '')}")
+
+
+async def _send_feishu_message(chat_id: str, text: str):
+    """发送飞书消息到群/私聊(非回复)"""
+    import httpx
+
+    token = await _get_tenant_access_token()
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            "https://open.feishu.cn/open-apis/im/v1/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"receive_id_type": "chat_id"},
+            json={
+                "receive_id": chat_id,
+                "content": json.dumps({"text": text}),
+                "msg_type": "text",
+            },
+        )
+        data = resp.json()
+        if data.get("code") != 0:
+            print(f"[Feishu] Send message failed: {data.get('msg', '')}")
 
 
 # ═══════════════════════════════════════════════════════
