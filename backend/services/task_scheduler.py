@@ -15,7 +15,7 @@ from sqlalchemy import select, update
 
 from config.settings import get_settings
 from db.database import AsyncSessionLocal
-from db.models import ScheduledTask, User, Watchlist, WatchlistItem, Document
+from db.models import ScheduledTask, User, Watchlist, WatchlistItem, Document, Portfolio, Position
 
 _settings = get_settings()
 _scheduler: Optional[AsyncIOScheduler] = None
@@ -119,8 +119,31 @@ def _add_job(scheduler: AsyncIOScheduler, task: ScheduledTask):
     print(f"[Scheduler] Added job: {task.name} ({task.cron_expression})")
 
 
+async def _acquire_task_lock(task_id: str) -> bool:
+    """Try to acquire a distributed lock via Redis to prevent duplicate execution.
+    Returns True if lock acquired (this instance should execute), False otherwise.
+    """
+    try:
+        from db.redis_client import redis_client
+        lock_key = f"scheduler:lock:{task_id}:{datetime.utcnow().strftime('%Y%m%d%H%M')}"
+        # SET NX with 10 min TTL — only one instance wins
+        acquired = await redis_client.set(lock_key, "1", ex=600, nx=True)
+        return bool(acquired)
+    except Exception as e:
+        # If Redis is unavailable, allow execution (single instance fallback)
+        print(f"[Scheduler] Redis lock failed ({e}), proceeding anyway")
+        return True
+
+
 async def _execute_task(task_id: str):
-    """Execute a scheduled task — called by APScheduler"""
+    """Execute a scheduled task — called by APScheduler.
+    Uses Redis distributed lock to prevent duplicate execution across ECS tasks.
+    """
+    # Distributed lock: only one ECS task executes each scheduled job
+    if not await _acquire_task_lock(task_id):
+        print(f"[Scheduler] Task {task_id} already being executed by another instance, skipping")
+        return
+
     print(f"[Scheduler] Executing task {task_id}...")
 
     try:
@@ -173,8 +196,8 @@ async def _execute_task(task_id: str):
             db.add(doc)
             await db.commit()
 
-            # Send email notification
-            if task.notification_email:
+            # Send email notification — only if response is not an error
+            if task.notification_email and not response.startswith("⚠️"):
                 try:
                     from api.routes.scheduler_routes import _send_task_notification
                     await _send_task_notification(task.name, response, task.notification_email)
@@ -185,16 +208,32 @@ async def _execute_task(task_id: str):
 
     except Exception as e:
         print(f"[Scheduler] Task {task_id} failed: {e}\n{traceback.format_exc()}")
+        # Save error to DB but don't send as email
+        try:
+            async with AsyncSessionLocal() as err_db:
+                await err_db.execute(
+                    update(ScheduledTask).where(ScheduledTask.id == task_id).values(
+                        last_run_at=datetime.utcnow(),
+                        last_result=f"⚠️ 执行失败: {str(e)[:200]}",
+                    )
+                )
+                await err_db.commit()
+        except Exception:
+            pass
 
 
 async def _build_task_prompt(task: ScheduledTask, user: User, db) -> str:
-    """Build the full prompt with user context and watchlist"""
+    """Build the full prompt with user context, watchlist, and portfolio positions.
+    Scheduled tasks always get full user context (watchlist + positions).
+    """
+    from db.models import Portfolio, Position
+
     parts = [
         f"[当前日期: {datetime.now().strftime('%Y年%m月%d日 %H:%M')}]",
         f"[用户: {user.full_name or user.username}, 风险偏好: {user.risk_preference}]",
     ]
 
-    # Get watchlist
+    # Always load watchlist for scheduled tasks
     try:
         wl_result = await db.execute(
             select(Watchlist).where(Watchlist.user_id == user.id, Watchlist.is_default == True).limit(1)
@@ -208,6 +247,24 @@ async def _build_task_prompt(task: ScheduledTask, user: User, db) -> str:
             if items:
                 stock_list = ", ".join([f"{i.stock_name}({i.stock_code})" for i in items])
                 parts.append(f"[自选股池: {stock_list}]")
+    except Exception:
+        pass
+
+    # Always load portfolio positions for scheduled tasks
+    try:
+        port_result = await db.execute(
+            select(Portfolio).where(Portfolio.user_id == user.id).limit(1)
+        )
+        portfolio = port_result.scalar_one_or_none()
+        if portfolio:
+            parts.append(f"[模拟盘: {portfolio.name}, 总资产¥{portfolio.total_value:,.0f}, 可用¥{portfolio.available_cash:,.0f}, 收益{portfolio.total_profit_pct:.2f}%]")
+            pos_result = await db.execute(
+                select(Position).where(Position.portfolio_id == portfolio.id)
+            )
+            positions = pos_result.scalars().all()
+            if positions:
+                pos_list = ", ".join([f"{p.stock_name}({p.stock_code}) {p.quantity}股 成本{p.avg_cost:.2f}" for p in positions])
+                parts.append(f"[持仓: {pos_list}]")
     except Exception:
         pass
 

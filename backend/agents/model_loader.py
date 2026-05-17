@@ -121,7 +121,9 @@ def load_model(
     max_tokens: int = None,
     model_key: str = None,
 ) -> BedrockModel:
-    """加载Bedrock LLM模型"""
+    """加载Bedrock LLM模型 (read_timeout=300s for long agent tasks)"""
+    from botocore.config import Config as BotoConfig
+
     key = model_key or _active_model_key
     model_info = AVAILABLE_MODELS.get(key, AVAILABLE_MODELS["claude-sonnet-4.6"])
 
@@ -132,6 +134,7 @@ def load_model(
         region_name=settings.AWS_REGION,
         temperature=temperature or settings.LLM_TEMPERATURE,
         max_tokens=effective_max_tokens,
+        boto_client_config=BotoConfig(read_timeout=300, connect_timeout=10, retries={"max_attempts": 2}),
     )
 
 
