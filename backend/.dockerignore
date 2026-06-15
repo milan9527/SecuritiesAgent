@@ -1,0 +1,12 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.git/
+tests/
+.env
+.bedrock_agentcore/
+node_modules/
+# 注意: 不要忽略 .claude/skills —— 镜像需要内置 skill 以 seed 到 EFS

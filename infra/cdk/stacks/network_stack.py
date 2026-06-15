@@ -59,7 +59,27 @@ class NetworkStack(Stack):
         self.redis_sg.add_ingress_rule(self.ecs_sg, ec2.Port.tcp(6379), "From ECS")
         self.redis_sg.add_ingress_rule(ec2.Peer.ipv4(self.vpc.vpc_cidr_block), ec2.Port.tcp(6379), "From VPC")
 
+        # AgentCore Runtime Security Group (VPC-mode Runtime ENIs; needs EFS mount)
+        self.runtime_sg = ec2.SecurityGroup(self, "RuntimeSg",
+            vpc=self.vpc, security_group_name=f"{project}-runtime-sg",
+            description="AgentCore Runtime - VPC mode (EFS skills mount)",
+            allow_all_outbound=True,
+        )
+
+        # EFS Security Group (NFS 2049 from Runtime + ECS)
+        self.efs_sg = ec2.SecurityGroup(self, "EfsSg",
+            vpc=self.vpc, security_group_name=f"{project}-efs-sg",
+            description="EFS skills - NFS 2049 from Runtime/ECS",
+            allow_all_outbound=True,
+        )
+        self.efs_sg.add_ingress_rule(self.runtime_sg, ec2.Port.tcp(2049), "NFS from Runtime")
+        self.efs_sg.add_ingress_rule(self.ecs_sg, ec2.Port.tcp(2049), "NFS from ECS")
+
         # Outputs
         CfnOutput(self, "VpcId", value=self.vpc.vpc_id)
         CfnOutput(self, "AlbSgId", value=self.alb_sg.security_group_id)
         CfnOutput(self, "EcsSgId", value=self.ecs_sg.security_group_id)
+        CfnOutput(self, "RuntimeSgId", value=self.runtime_sg.security_group_id)
+        CfnOutput(self, "EfsSgId", value=self.efs_sg.security_group_id)
+        CfnOutput(self, "PrivateSubnetIds",
+                  value=",".join(s.subnet_id for s in self.vpc.private_subnets))

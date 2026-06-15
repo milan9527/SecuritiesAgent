@@ -1,0 +1,6 @@
+.venv/
+cdk.out/
+cdk.out.*/
+cdk-outputs-*.json
+*.pyc
+__pycache__/

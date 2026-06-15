@@ -15,7 +15,7 @@ RUN npm install -g @anthropic-ai/claude-code
 # Install Python deps
 COPY pyproject.toml .
 RUN pip install --no-cache-dir -e . 2>/dev/null || pip install --no-cache-dir \
-    claude-agent-sdk bedrock-agentcore \
+    claude-agent-sdk bedrock-agentcore opentelemetry-api opentelemetry-sdk \
     fastapi "uvicorn[standard]" httpx "sqlalchemy[asyncio]" asyncpg psycopg2-binary \
     alembic redis pydantic pydantic-settings python-dotenv pandas numpy boto3 \
     "python-jose[cryptography]" "passlib[bcrypt]" "bcrypt<5" python-multipart \
@@ -23,10 +23,21 @@ RUN pip install --no-cache-dir -e . 2>/dev/null || pip install --no-cache-dir \
 
 # Copy app
 COPY . .
+RUN chmod +x entrypoint.sh
 
 # Route Claude Agent SDK through AWS Bedrock
-ENV CLAUDE_CODE_USE_BEDROCK=1
+ENV CLAUDE_CODE_USE_BEDROCK=1 \
+    HOME=/home/appuser
 
-EXPOSE 8000
+# 非 root 用户 (uid/gid 1000):
+#  - Claude CLI 拒绝以 root 使用 --dangerously-skip-permissions
+#  - 与 EFS access point 的 POSIX user (1000:1000) 匹配, 保证 /mnt/skills 读写
+RUN groupadd -g 1000 appuser && \
+    useradd -u 1000 -g 1000 -m -d /home/appuser appuser && \
+    chown -R appuser:appuser /app /home/appuser
+USER appuser
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 8000 = FastAPI (ECS); 8080 = AgentCore Runtime (agent)
+EXPOSE 8000 8080
+
+ENTRYPOINT ["./entrypoint.sh"]

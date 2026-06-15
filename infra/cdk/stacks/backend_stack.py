@@ -25,6 +25,9 @@ class BackendStack(Stack):
                  user_pool: cognito.UserPool,
                  user_pool_client: cognito.UserPoolClient,
                  sns_topic: sns.Topic,
+                 agentcore_runtime_arn: str = "",
+                 agentcore_browser_id: str = "",
+                 agentcore_ci_id: str = "",
                  **kwargs):
         super().__init__(scope, id, **kwargs)
 
@@ -111,6 +114,10 @@ class BackendStack(Stack):
                 "LLM_MODEL_ID": "us.anthropic.claude-sonnet-4-6",
                 "LLM_MAX_TOKENS": "16384",
                 "LLM_TEMPERATURE": "0.3",
+                # AgentCore: backend 通过 Runtime 调用 Agent (空则回退进程内 SDK orchestrator)
+                "AGENTCORE_AGENT_ARN": agentcore_runtime_arn,
+                "AGENTCORE_BROWSER_ID": agentcore_browser_id,
+                "AGENTCORE_CODE_INTERPRETER_ID": agentcore_ci_id,
             },
             secrets={
                 "POSTGRES_USER": ecs.Secret.from_secrets_manager(db_cluster.secret, "username"),
