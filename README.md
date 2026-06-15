@@ -1,6 +1,6 @@
 # 证券交易助手 Agent 平台
 
-AI-powered securities trading assistant platform built on **Strands Agent SDK** and **AWS Bedrock AgentCore**, featuring investment analysis, stock trading, quantitative backtesting, and scheduled autonomous tasks.
+AI-powered securities trading assistant platform built on the **Claude Agent SDK** (`claude-agent-sdk`) and **AWS Bedrock AgentCore**, featuring investment analysis, stock trading, quantitative backtesting, and scheduled autonomous tasks. The orchestrator delegates to specialized **sub-agents** (`AgentDefinition`) and works tightly with **Skills** (`.claude/skills/*/SKILL.md`); all domain capabilities are exposed as in-process MCP tools.
 
 ## Architecture
 
@@ -34,7 +34,7 @@ AI-powered securities trading assistant platform built on **Strands Agent SDK** 
 │ v2          │ │                  │                    │                    │
 │ 13 tables   │ │ Quote cache 10s  │                    │ ┌────────────────┐ │
 │ Users       │ │ K-line cache 60s │                    │ │ Orchestrator   │ │
-│ Stocks      │ │                  │                    │ │ (Agent-as-Tool)│ │
+│ Stocks      │ │                  │                    │ │ (SDK Sub-agents)│ │
 │ Portfolios  │ │                  │                    │ │                │ │
 │ Strategies  │ │                  │                    │ │ Sub-Agents:    │ │
 │ Orders      │ │                  │                    │ │ • Analyst      │ │
@@ -175,7 +175,7 @@ AI-powered securities trading assistant platform built on **Strands Agent SDK** 
 |-------|-----------|
 | Frontend | React 18, TypeScript, Tailwind CSS, Recharts, Vite |
 | Backend | Python 3.12, FastAPI, SQLAlchemy 2, Pydantic 2 |
-| Agent SDK | Strands Agents SDK, Agent-as-Tool pattern |
+| Agent SDK | Claude Agent SDK (`claude-agent-sdk`), Sub-agents + Skills + in-process MCP tools |
 | Runtime | AWS Bedrock AgentCore Runtime (ARM64, VPC) |
 | LLM | Bedrock Claude Sonnet 4.6 (default), 9 models available |
 | Memory | AgentCore Memory (STM + LTM, SCOPE self-evolution) |
@@ -314,14 +314,18 @@ Runtime SG (sg-runtime) : outbound all
 ## Project Structure
 ```
 ├── backend/
+│   ├── .claude/skills/                # Claude Agent SDK Skills (progressive disclosure)
+│   │   ├── investment-analysis/SKILL.md
+│   │   ├── stock-trading/SKILL.md
+│   │   ├── quant-trading/SKILL.md
+│   │   └── market-data/SKILL.md
 │   ├── agents/
-│   │   ├── orchestrator_agent.py      # Main agent (AgentCore Runtime entry)
-│   │   ├── investment_analyst_agent.py # Deep analysis with crawlers
-│   │   ├── stock_trading_agent.py     # Trading signals and simulation
-│   │   ├── quant_trading_agent.py     # Quantitative strategies
-│   │   ├── model_loader.py            # 9 LLM models
-│   │   ├── runtime_client.py          # AgentCore Runtime client (streaming + non-streaming)
-│   │   └── skills/
+│   │   ├── orchestrator_agent.py      # Main agent: claude-agent-sdk query() + AgentCore Runtime entry
+│   │   ├── subagents.py               # AgentDefinition sub-agents (analyst / trader / quant)
+│   │   ├── sdk_tools.py               # SDK @tool wrappers + in-process MCP server (securities)
+│   │   ├── model_loader.py            # Bedrock model catalog + env setup (CLAUDE_CODE_USE_BEDROCK)
+│   │   ├── runtime_client.py          # AgentCore Runtime client (local SDK fallback)
+│   │   └── skills/                    # Plain business-logic functions (also called by routes)
 │   │       ├── market_data_skill.py   # Multi-source quotes, K-line, order book
 │   │       ├── analysis_skill.py      # Technical indicators, reports
 │   │       ├── web_fetch_skill.py     # Web search (DDG + Bing)

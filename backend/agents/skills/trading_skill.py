@@ -6,10 +6,8 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from strands import tool
 
 
-@tool
 def execute_simulated_order(
     portfolio_id: str,
     stock_code: str,
@@ -63,7 +61,6 @@ def execute_simulated_order(
     }
 
 
-@tool
 def generate_trading_signal(
     stock_code: str,
     stock_name: str,
@@ -108,7 +105,6 @@ def generate_trading_signal(
     return signal
 
 
-@tool
 def calculate_position_size(
     available_cash: float,
     stock_price: float,
@@ -143,7 +139,6 @@ def calculate_position_size(
     }
 
 
-@tool
 def evaluate_strategy_conditions(
     strategy_params: dict,
     technical_data: dict,

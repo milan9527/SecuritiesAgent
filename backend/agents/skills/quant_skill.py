@@ -6,10 +6,8 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from strands import tool
 
 
-@tool
 def run_backtest(
     stock_code: str,
     strategy_name: str = "dual_ma_cross",
@@ -182,7 +180,6 @@ def run_backtest(
         return {"error": f"回测执行失败: {str(e)}", "status": "failed"}
 
 
-@tool
 def list_quant_templates() -> list[dict]:
     """列出所有预置量化策略模板
 
@@ -345,7 +342,6 @@ def handle_data(context, data):
     return templates
 
 
-@tool
 def calculate_performance_metrics(equity_curve: list[dict]) -> dict:
     """计算量化策略绩效指标
 

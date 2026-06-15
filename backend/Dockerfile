@@ -2,14 +2,20 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install system deps
+# Install system deps + Node.js (Claude Agent SDK spawns the Claude Code CLI subprocess)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libpq-dev && rm -rf /var/lib/apt/lists/*
+    gcc libpq-dev curl ca-certificates && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Claude Code CLI (required at runtime by claude-agent-sdk)
+RUN npm install -g @anthropic-ai/claude-code
 
 # Install Python deps
 COPY pyproject.toml .
 RUN pip install --no-cache-dir -e . 2>/dev/null || pip install --no-cache-dir \
-    strands-agents strands-agents-tools bedrock-agentcore \
+    claude-agent-sdk bedrock-agentcore \
     fastapi "uvicorn[standard]" httpx "sqlalchemy[asyncio]" asyncpg psycopg2-binary \
     alembic redis pydantic pydantic-settings python-dotenv pandas numpy boto3 \
     "python-jose[cryptography]" "passlib[bcrypt]" "bcrypt<5" python-multipart \
@@ -17,6 +23,9 @@ RUN pip install --no-cache-dir -e . 2>/dev/null || pip install --no-cache-dir \
 
 # Copy app
 COPY . .
+
+# Route Claude Agent SDK through AWS Bedrock
+ENV CLAUDE_CODE_USE_BEDROCK=1
 
 EXPOSE 8000
 

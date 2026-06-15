@@ -4,10 +4,8 @@
 """
 from __future__ import annotations
 
-from strands import tool
 
 
-@tool
 def analyze_technical_indicators(stock_code: str) -> dict:
     """多周期技术指标分析(日线/周线/月线, MA/MACD/RSI/KDJ/BOLL)
 
@@ -96,7 +94,6 @@ def analyze_technical_indicators(stock_code: str) -> dict:
     return result
 
 
-@tool
 def generate_investment_report(stock_code: str, stock_name: str, quote_data: dict, technical_data: dict, analysis_notes: str = "") -> dict:
     """生成投资分析报告
 

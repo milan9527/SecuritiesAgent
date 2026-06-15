@@ -7,7 +7,6 @@ from __future__ import annotations
 import re
 import json
 import httpx
-from strands import tool
 
 # ═══════════════════════════════════════════════════════
 # 预置财经爬虫 - 主流财经网站专用解析器
@@ -106,7 +105,6 @@ def _crawl_stock_research_report(stock_code: str) -> list[dict]:
 # 对外工具接口
 # ═══════════════════════════════════════════════════════
 
-@tool
 def crawl_financial_news(keyword: str, sources: str = "all", count: int = 10) -> dict:
     """专业财经新闻爬虫，从多个主流财经网站采集新闻
 
@@ -135,7 +133,6 @@ def crawl_financial_news(keyword: str, sources: str = "all", count: int = 10) ->
     }
 
 
-@tool
 def crawl_stock_reports(stock_code: str) -> dict:
     """爬取个股研究报告，获取券商研报评级和目标价
 
@@ -150,7 +147,6 @@ def crawl_stock_reports(stock_code: str) -> dict:
     }
 
 
-@tool
 def crawl_web_page_deep(url: str, extract_mode: str = "article") -> dict:
     """深度爬取网页内容，支持多种提取模式
 
@@ -197,7 +193,6 @@ def crawl_web_page_deep(url: str, extract_mode: str = "article") -> dict:
         return {"error": f"爬取失败: {str(e)[:200]}", "url": url}
 
 
-@tool
 def crawl_industry_data(industry: str) -> dict:
     """爬取行业数据和板块资金流向
 
@@ -226,7 +221,6 @@ def crawl_industry_data(industry: str) -> dict:
     return results
 
 
-@tool
 def list_available_crawlers() -> list[dict]:
     """列出所有可用的预置爬虫"""
     return [

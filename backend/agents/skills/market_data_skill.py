@@ -9,7 +9,6 @@ import re
 import json
 import httpx
 from typing import Optional
-from strands import tool
 
 # ═══════════════════════════════════════════════════════
 # 数据源适配器
@@ -205,7 +204,6 @@ def _kline_yahoo(stock_code: str, period: str, count: int) -> dict:
 # 对外工具接口
 # ═══════════════════════════════════════════════════════
 
-@tool
 def get_stock_realtime_quote(stock_code: str, source: str = "tencent") -> dict:
     """获取股票实时行情数据
 
@@ -220,7 +218,6 @@ def get_stock_realtime_quote(stock_code: str, source: str = "tencent") -> dict:
         return {"error": f"获取行情失败({source}): {str(e)}"}
 
 
-@tool
 def get_stock_batch_quotes(stock_codes: list[str], source: str = "tencent") -> list[dict]:
     """批量获取多只股票的实时行情
 
@@ -235,7 +232,6 @@ def get_stock_batch_quotes(stock_codes: list[str], source: str = "tencent") -> l
     return results
 
 
-@tool
 def get_stock_kline(stock_code: str, period: str = "day", count: int = 60, source: str = "sina") -> dict:
     """获取股票K线历史数据
 
@@ -253,7 +249,6 @@ def get_stock_kline(stock_code: str, period: str = "day", count: int = 60, sourc
         return {"error": f"获取K线失败({source}): {str(e)}"}
 
 
-@tool
 def search_stocks(keyword: str) -> list[dict]:
     """搜索股票，支持代码或名称模糊搜索
 
@@ -290,7 +285,6 @@ def search_stocks(keyword: str) -> list[dict]:
         return [{"error": f"搜索失败: {str(e)}"}]
 
 
-@tool
 def list_market_data_sources() -> list[dict]:
     """列出所有可用的行情数据源"""
     return [
@@ -318,7 +312,6 @@ def get_market_indices() -> list[dict]:
     return results
 
 
-@tool
 def get_stock_order_book(stock_code: str) -> dict:
     """获取股票买卖5档委托盘口数据
 

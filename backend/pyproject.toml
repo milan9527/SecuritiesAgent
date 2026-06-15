@@ -8,8 +8,7 @@ version = "1.0.0"
 description = "证券交易助手Agent平台 - Securities Trading Assistant Agent Platform"
 requires-python = ">=3.10"
 dependencies = [
-    "strands-agents>=1.13.0",
-    "strands-agents-tools>=0.1.0",
+    "claude-agent-sdk>=0.1.0",
     "bedrock-agentcore>=1.0.3",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",

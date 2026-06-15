@@ -6,10 +6,8 @@ from __future__ import annotations
 
 import re
 import httpx
-from strands import tool
 
 
-@tool
 def web_search(query: str, max_results: int = 8) -> list[dict]:
     """搜索互联网获取最新信息，返回尽可能多的结果
 
@@ -87,7 +85,6 @@ def web_search(query: str, max_results: int = 8) -> list[dict]:
     return results[:max_results]
 
 
-@tool
 def fetch_web_page(url: str, max_length: int = 5000) -> dict:
     """获取网页内容，提取正文文本，尽量获取完整内容
 
@@ -122,7 +119,6 @@ def fetch_web_page(url: str, max_length: int = 5000) -> dict:
         return {"error": f"获取失败: {str(e)}", "url": url}
 
 
-@tool
 def search_financial_news(keyword: str) -> list[dict]:
     """搜索财经新闻和研报，获取最新市场动态、公司公告、行业分析
 

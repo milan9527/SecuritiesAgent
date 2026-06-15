@@ -113,11 +113,9 @@ def invoke_runtime_agent(
 
 
 def _invoke_local(prompt: str, session_id: str, user_id: str) -> str:
-    """本地直接调用Agent"""
-    from agents.orchestrator_agent import create_orchestrator_agent
-    agent = create_orchestrator_agent(session_id=session_id, actor_id=user_id)
-    response = agent(prompt)
-    return str(response)
+    """本地直接调用Agent (Claude Agent SDK 编排器, 不经 AgentCore Runtime)"""
+    from agents.orchestrator_agent import run_orchestrator
+    return run_orchestrator(prompt, session_id=session_id, actor_id=user_id)
 
 
 def _invoke_runtime(agent_arn: str, prompt: str, session_id: str, user_id: str) -> str:

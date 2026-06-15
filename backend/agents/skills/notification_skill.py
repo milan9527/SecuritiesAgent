@@ -9,11 +9,9 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
-from strands import tool
 from config.settings import get_settings
 
 
-@tool
 def send_trading_signal_notification(
     signal_data: dict,
     notification_channels: list[str],
@@ -98,7 +96,6 @@ def send_trading_signal_notification(
     }
 
 
-@tool
 def format_daily_report(
     portfolio_summary: dict,
     signals: list[dict],
