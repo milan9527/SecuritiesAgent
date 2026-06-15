@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir -e . 2>/dev/null || pip install --no-cache-dir \
     fastapi "uvicorn[standard]" httpx "sqlalchemy[asyncio]" asyncpg psycopg2-binary \
     alembic redis pydantic pydantic-settings python-dotenv pandas numpy boto3 \
     "python-jose[cryptography]" "passlib[bcrypt]" "bcrypt<5" python-multipart \
-    aiohttp apscheduler jinja2 nest-asyncio playwright markdown pgvector
+    aiohttp apscheduler jinja2 nest-asyncio playwright markdown pgvector akshare
 
 # Copy app
 COPY . .
