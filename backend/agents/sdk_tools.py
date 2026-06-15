@@ -242,118 +242,6 @@ async def format_daily_report(args: dict[str, Any]) -> dict[str, Any]:
 
 
 # ═══════════════════════════════════════════════════════
-# AgentCore Code Interpreter (托管沙箱执行 Python/代码)
-# ═══════════════════════════════════════════════════════
-def _run_in_code_interpreter(code: str, language: str = "python") -> dict:
-    """在 AgentCore Code Interpreter 沙箱里执行代码, 返回 stdout/stderr/exitCode。"""
-    import os, uuid, boto3
-    ci_id = os.environ.get("AGENTCORE_CODE_INTERPRETER_ID", "").strip()
-    if not ci_id:
-        return {"error": "Code Interpreter 未配置 (AGENTCORE_CODE_INTERPRETER_ID 为空)"}
-    region = os.environ.get("AWS_REGION", "us-east-1")
-    c = boto3.client("bedrock-agentcore", region_name=region)
-    sid = None
-    try:
-        s = c.start_code_interpreter_session(
-            codeInterpreterIdentifier=ci_id,
-            name="agent-" + uuid.uuid4().hex[:12],
-            sessionTimeoutSeconds=900,
-        )
-        sid = s["sessionId"]
-        resp = c.invoke_code_interpreter(
-            codeInterpreterIdentifier=ci_id, sessionId=sid,
-            name="executeCode", arguments={"language": language, "code": code},
-        )
-        stdout = stderr = ""
-        exit_code = 0
-        for ev in resp.get("stream", []):
-            res = ev.get("result", {})
-            sc = res.get("structuredContent", {})
-            stdout += sc.get("stdout", "")
-            stderr += sc.get("stderr", "")
-            exit_code = sc.get("exitCode", exit_code)
-            if res.get("isError"):
-                for blk in res.get("content", []):
-                    if blk.get("type") == "text":
-                        stderr += blk.get("text", "")
-        return {"stdout": stdout[:8000], "stderr": stderr[:2000], "exitCode": exit_code}
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)[:300]}
-    finally:
-        if sid:
-            try:
-                c.stop_code_interpreter_session(codeInterpreterIdentifier=ci_id, sessionId=sid)
-            except Exception:
-                pass
-
-
-@tool("run_code",
-      "在 AgentCore 托管沙箱中执行代码 (默认 Python)。适合全市场选股/板块排行/复杂计算/"
-      "用 akshare 等库拉数据。返回 stdout/stderr/exitCode。沙箱可联网, 可 pip install。",
-      {"code": str, "language": str})
-async def run_code(args: dict[str, Any]) -> dict[str, Any]:
-    return await _run(_run_in_code_interpreter, code=args["code"], language=args.get("language", "python"))
-
-
-# ═══════════════════════════════════════════════════════
-# AgentCore Browser (托管无头浏览器, 用 Playwright over CDP 驱动)
-# ═══════════════════════════════════════════════════════
-def _browse_web(url: str, extract: str = "text", wait_ms: int = 2500) -> dict:
-    """用 AgentCore Browser 打开 URL, 渲染后抽取内容。适合需要 JS 渲染的页面。
-
-    extract: 'text' 抽正文文本 | 'html' 抽渲染后 HTML | 'title' 仅标题。
-    """
-    import os
-    br_id = os.environ.get("AGENTCORE_BROWSER_ID", "").strip()
-    if not br_id:
-        return {"error": "Browser 未配置 (AGENTCORE_BROWSER_ID 为空)"}
-    region = os.environ.get("AWS_REGION", "us-east-1")
-    try:
-        from bedrock_agentcore.tools.browser_client import BrowserClient
-        from playwright.sync_api import sync_playwright
-    except Exception as e:  # noqa: BLE001
-        return {"error": f"依赖缺失: {str(e)[:150]}"}
-
-    client = BrowserClient(region=region)
-    try:
-        client.start(identifier=br_id, session_timeout_seconds=600)
-        ws_url, headers = client.generate_ws_headers()
-        with sync_playwright() as p:
-            browser = p.chromium.connect_over_cdp(ws_url, headers=headers)
-            try:
-                ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-                page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                page.wait_for_timeout(max(0, min(wait_ms, 10000)))
-                title = page.title()
-                if extract == "title":
-                    content = title
-                elif extract == "html":
-                    content = page.content()[:20000]
-                else:
-                    content = page.inner_text("body")[:15000]
-                return {"url": url, "title": title, "extract": extract, "content": content}
-            finally:
-                browser.close()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)[:300]}
-    finally:
-        try:
-            client.stop()
-        except Exception:
-            pass
-
-
-@tool("browse_web",
-      "用 AgentCore 托管浏览器打开网页并抽取渲染后内容 (支持 JS 渲染的动态页面)。"
-      "当普通 web_fetch 拿不到动态内容、或需要真实浏览器渲染时使用。",
-      {"url": str, "extract": str, "wait_ms": int})
-async def browse_web(args: dict[str, Any]) -> dict[str, Any]:
-    return await _run(_browse_web, url=args["url"],
-                      extract=args.get("extract", "text"), wait_ms=args.get("wait_ms", 2500))
-
-
-# ═══════════════════════════════════════════════════════
 # In-process MCP Server: 所有证券工具
 # ═══════════════════════════════════════════════════════
 ALL_TOOLS = [
@@ -371,8 +259,6 @@ ALL_TOOLS = [
     run_backtest, list_quant_templates, calculate_performance_metrics,
     # notification
     send_trading_signal_notification, format_daily_report,
-    # code interpreter (托管沙箱) + browser (托管浏览器)
-    run_code, browse_web,
 ]
 
 SERVER_NAME = "securities"
@@ -403,8 +289,6 @@ TOOL_GROUPS: dict[str, list[str]] = {
                  "evaluate_strategy_conditions"]],
     "quant": [tool_name(n) for n in ["run_backtest", "list_quant_templates", "calculate_performance_metrics"]],
     "notification": [tool_name(n) for n in ["send_trading_signal_notification", "format_daily_report"]],
-    "code-interpreter": [tool_name("run_code")],
-    "browser": [tool_name("browse_web")],
 }
 
 
