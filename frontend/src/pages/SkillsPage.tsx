@@ -37,7 +37,6 @@ export default function SkillsPage() {
   const [aiLoading, setAiLoading] = useState(false)
   const [importUrl, setImportUrl] = useState('')
   const [importFile, setImportFile] = useState<File | null>(null)
-  const [filter, setFilter] = useState('')
 
   useEffect(() => { loadRecords() }, [])
 
@@ -137,7 +136,7 @@ export default function SkillsPage() {
     } catch { toast.error('操作失败') }
   }
 
-  const filtered = filter ? records.filter(r => r.status === filter || r.skill_type === filter) : records
+  const filtered = records
 
   return (
     <div className="space-y-6">
@@ -154,21 +153,6 @@ export default function SkillsPage() {
             <Plus className="w-4 h-4" /> 新建
           </button>
         </div>
-      </div>
-
-      {/* Filters */}
-      <div className="flex gap-2 flex-wrap">
-        {[
-          { key: '', label: `全部 (${records.length})` },
-          { key: 'APPROVED', label: `已批准 (${records.filter(r => r.status === 'APPROVED').length})` },
-          { key: 'PENDING_APPROVAL', label: '待审批' },
-          { key: 'DRAFT', label: '草稿' },
-        ].map(f => (
-          <button key={f.key} onClick={() => setFilter(f.key)}
-            className={`px-3 py-1.5 rounded-lg text-xs ${filter === f.key ? 'bg-primary-500/20 text-primary-300 border border-primary-500/30' : 'bg-surface-hover text-gray-400 border border-surface-border'}`}>
-            {f.label}
-          </button>
-        ))}
       </div>
 
       {/* 导入 */}
