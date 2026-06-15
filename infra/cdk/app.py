@@ -44,6 +44,8 @@ backend = BackendStack(app, f"{project}-backend", env=env, project=project,
                        db_cluster=data.db_cluster, redis_cache=data.redis_cache,
                        user_pool=auth.user_pool, user_pool_client=auth.user_pool_client,
                        sns_topic=auth.sns_topic,
+                       skills_fs=data.skills_fs, skills_ap=data.skills_ap,
+                       efs_sg=network.efs_sg,
                        agentcore_runtime_arn=app.node.try_get_context("runtime_arn") or "",
                        agentcore_browser_id=app.node.try_get_context("browser_id") or "",
                        agentcore_ci_id=app.node.try_get_context("ci_id") or "")

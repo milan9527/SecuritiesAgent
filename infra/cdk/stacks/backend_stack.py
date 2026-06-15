@@ -13,6 +13,7 @@ from aws_cdk import (
     aws_elasticache as elasticache,
     aws_cognito as cognito,
     aws_sns as sns,
+    aws_efs as efs,
 )
 from constructs import Construct
 
@@ -25,6 +26,9 @@ class BackendStack(Stack):
                  user_pool: cognito.UserPool,
                  user_pool_client: cognito.UserPoolClient,
                  sns_topic: sns.Topic,
+                 skills_fs: efs.FileSystem = None,
+                 skills_ap: efs.AccessPoint = None,
+                 efs_sg: ec2.SecurityGroup = None,
                  agentcore_runtime_arn: str = "",
                  agentcore_browser_id: str = "",
                  agentcore_ci_id: str = "",
@@ -85,6 +89,13 @@ class BackendStack(Stack):
         ))
         # CloudWatch Logs
         task_role.add_managed_policy(iam.ManagedPolicy.from_aws_managed_policy_name("CloudWatchLogsFullAccess"))
+        # EFS (shared skills dir — backend writes imported skills the Runtime agent reads)
+        if skills_fs is not None:
+            task_role.add_to_policy(iam.PolicyStatement(
+                actions=["elasticfilesystem:ClientMount", "elasticfilesystem:ClientWrite",
+                         "elasticfilesystem:DescribeMountTargets"],
+                resources=[skills_fs.file_system_arn],
+            ))
 
         # ── Task Definition ──
         task_def = ecs.FargateTaskDefinition(self, "TaskDef",
@@ -97,6 +108,22 @@ class BackendStack(Stack):
             ),
             task_role=task_role,
         )
+
+        # ── EFS volume (shared skills dir, same access point as AgentCore Runtime) ──
+        skills_mount_path = "/mnt/skills"
+        skills_enabled = skills_fs is not None and skills_ap is not None
+        if skills_enabled:
+            task_def.add_volume(
+                name="skills",
+                efs_volume_configuration=ecs.EfsVolumeConfiguration(
+                    file_system_id=skills_fs.file_system_id,
+                    transit_encryption="ENABLED",
+                    authorization_config=ecs.AuthorizationConfig(
+                        access_point_id=skills_ap.access_point_id,
+                        iam="ENABLED",
+                    ),
+                ),
+            )
 
         # Log group
         log_group = logs.LogGroup(self, "LogGroup",
@@ -133,6 +160,8 @@ class BackendStack(Stack):
                 "AGENTCORE_AGENT_ARN": agentcore_runtime_arn,
                 "AGENTCORE_BROWSER_ID": agentcore_browser_id,
                 "AGENTCORE_CODE_INTERPRETER_ID": agentcore_ci_id,
+                # 共享 skill 目录 (EFS, 与 Runtime 同一 access point): 导入的 skill 落此处, agent 自动读取
+                **({"AGENTCORE_SKILLS_ROOT": skills_mount_path} if skills_enabled else {}),
             },
             secrets={
                 "POSTGRES_USER": ecs.Secret.from_secrets_manager(db_cluster.secret, "username"),
@@ -147,6 +176,12 @@ class BackendStack(Stack):
             ),
         )
         container.add_port_mappings(ecs.PortMapping(container_port=8000, protocol=ecs.Protocol.TCP))
+        if skills_enabled:
+            container.add_mount_points(ecs.MountPoint(
+                source_volume="skills",
+                container_path=skills_mount_path,
+                read_only=False,
+            ))
 
         # ── ALB ──
         self.alb = elbv2.ApplicationLoadBalancer(self, "Alb",
