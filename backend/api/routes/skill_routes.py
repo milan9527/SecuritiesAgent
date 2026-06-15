@@ -53,9 +53,10 @@ def _efs_records() -> list[dict]:
     recs = []
     for s in list_skills():
         recs.append({
-            # EFS skill 安装即生效, 用 APPROVED 兼容前端过滤 (前端只显示 APPROVED)
+            # status: 始终 APPROVED (兼容老前端过滤); enabled 表示 agent 是否加载
             "record_id": s["name"], "name": s["name"], "display_name": s["name"],
-            "status": "APPROVED", "version": "1.0.0", "description": s["description"],
+            "status": "APPROVED", "enabled": s.get("enabled", True),
+            "version": "1.0.0", "description": s["description"],
             "type": "AGENT_SKILLS", "skill_type": "builtin" if s["builtin"] else "external",
             "is_builtin": s["builtin"], "source": "efs", "created_at": "", "updated_at": "",
         })
@@ -110,8 +111,18 @@ async def create_registry_record(request: CreateRecordRequest, current_user: Use
 
 @router.put("/registry/{record_id}/status")
 async def update_record_status(record_id: str, status: str = "APPROVED", current_user: User = Depends(get_current_user)):
-    """EFS skill 安装即生效, 无审批流程, 直接返回成功。"""
+    """EFS skill 安装即生效, 无审批流程, 直接返回成功 (保留以兼容旧前端)。"""
     return {"success": True, "record_id": record_id, "status": status}
+
+
+@router.post("/registry/{record_id}/enabled")
+async def set_record_enabled(record_id: str, enabled: bool = True, current_user: User = Depends(get_current_user)):
+    """启用/禁用 skill: 禁用后 agent 不再加载该 skill (文件保留, 可随时重新启用)。"""
+    from agents.skill_store import set_skill_enabled
+    r = set_skill_enabled(record_id, enabled)
+    if r is None:
+        return {"success": False, "error": "skill 不存在"}
+    return {"success": True, "record_id": r["name"], "enabled": r["enabled"]}
 
 
 @router.delete("/registry/{record_id}")

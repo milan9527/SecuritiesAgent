@@ -116,26 +116,67 @@ def write_skill_bundle(name: str, skill_md: str, files: dict[str, bytes] | None 
     return {"name": safe, "path": md_path, "files": written, "bytes": total}
 
 
+_BUILTIN = {"investment-analysis", "stock-trading", "quant-trading", "market-data"}
+_DISABLED_SUFFIX = ".disabled"
+
+
 def list_skills() -> list[dict]:
-    """列出 `.claude/skills` 下所有 skill (name + description + 是否内置)。"""
+    """列出 `.claude/skills` 下所有 skill。
+
+    enabled 的 skill 有 SKILL.md (agent 会加载);
+    disabled 的 skill 其 SKILL.md 被改名为 SKILL.md.disabled (agent 不加载, 文件保留)。
+    """
     d = skills_dir()
     out: list[dict] = []
-    builtin = {"investment-analysis", "stock-trading", "quant-trading", "market-data"}
+    if not os.path.isdir(d):
+        return out
     for name in sorted(os.listdir(d)):
-        md = os.path.join(d, name, "SKILL.md")
-        if not os.path.isfile(md):
+        sk_dir = os.path.join(d, name)
+        if not os.path.isdir(sk_dir):
+            continue
+        md = os.path.join(sk_dir, "SKILL.md")
+        md_disabled = os.path.join(sk_dir, "SKILL.md" + _DISABLED_SUFFIX)
+        if os.path.isfile(md):
+            enabled, active_md = True, md
+        elif os.path.isfile(md_disabled):
+            enabled, active_md = False, md_disabled
+        else:
             continue
         desc = ""
         try:
-            with open(md, encoding="utf-8") as f:
+            with open(active_md, encoding="utf-8") as f:
                 head = f.read(2000)
             m = re.search(r"^\s*description:\s*(.+)$", head, re.M)
             if m:
                 desc = m.group(1).strip().strip('"').strip("'")
         except Exception:
             pass
-        out.append({"name": name, "description": desc[:200], "builtin": name in builtin})
+        out.append({"name": name, "description": desc[:200],
+                    "builtin": name in _BUILTIN, "enabled": enabled})
     return out
+
+
+def set_skill_enabled(name: str, enabled: bool) -> dict | None:
+    """启用/禁用一个 skill。
+
+    禁用: SKILL.md -> SKILL.md.disabled (agent 不再加载该 skill, 文件保留)。
+    启用: SKILL.md.disabled -> SKILL.md。
+    返回 {name, enabled} 或 None (skill 不存在)。
+    """
+    safe = sanitize_name(name)
+    sk_dir = os.path.join(skills_dir(), safe)
+    md = os.path.join(sk_dir, "SKILL.md")
+    md_disabled = md + _DISABLED_SUFFIX
+    if not os.path.isdir(sk_dir):
+        return None
+    if enabled:
+        if os.path.isfile(md_disabled) and not os.path.isfile(md):
+            os.rename(md_disabled, md)
+    else:
+        if os.path.isfile(md):
+            os.rename(md, md_disabled)
+    final_enabled = os.path.isfile(md)
+    return {"name": safe, "enabled": final_enabled}
 
 
 def read_skill(name: str) -> dict | None:

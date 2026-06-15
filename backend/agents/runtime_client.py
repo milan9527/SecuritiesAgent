@@ -129,10 +129,10 @@ def _invoke_runtime(agent_arn: str, prompt: str, session_id: str, user_id: str) 
         "user_id": user_id,
     })
 
-    # Session ID must be >= 33 chars for AgentCore Runtime
-    import uuid as _uuid
+    # Session ID must be >= 33 chars for AgentCore Runtime.
+    # 确定性补齐: 同一 session_id 每次得到相同结果, 保证多轮对话落到同一 Runtime session。
     if len(session_id) < 33:
-        session_id = f"{session_id}-{_uuid.uuid4()}"
+        session_id = (session_id + "-" + ("0" * 33))[:48]
 
     response = client.invoke_agent_runtime(
         agentRuntimeArn=agent_arn,

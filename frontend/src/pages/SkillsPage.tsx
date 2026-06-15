@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Puzzle, Plus, Trash2, Package, Globe, Eye, Sparkles, X, Check, RefreshCw, Upload, Download } from 'lucide-react'
+import { Puzzle, Plus, Trash2, Package, Globe, Eye, Sparkles, X, Check, RefreshCw, Upload, Download, ToggleLeft, ToggleRight } from 'lucide-react'
 import api from '../services/api'
 import toast from 'react-hot-toast'
 
@@ -130,6 +130,13 @@ export default function SkillsPage() {
     } catch { toast.error('操作失败') }
   }
 
+  const handleToggleEnabled = async (recordId: string, enabled: boolean) => {
+    try {
+      await api.post(`/api/skills/registry/${recordId}/enabled?enabled=${enabled}`)
+      toast.success(enabled ? '已启用' : '已禁用'); loadRecords()
+    } catch { toast.error('操作失败') }
+  }
+
   const filtered = filter ? records.filter(r => r.status === filter || r.skill_type === filter) : records
 
   return (
@@ -252,8 +259,10 @@ export default function SkillsPage() {
 
       {/* Records Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {filtered.map(r => (
-          <div key={r.record_id} className="card">
+        {filtered.map(r => {
+          const enabled = r.enabled !== false
+          return (
+          <div key={r.record_id} className={`card transition-opacity ${enabled ? '' : 'opacity-50'}`}>
             <div className="flex items-start justify-between mb-2">
               <div className="flex items-center gap-2">
                 {r.is_builtin ? <Package className="w-4 h-4 text-blue-400" /> : <Globe className="w-4 h-4 text-orange-400" />}
@@ -263,7 +272,9 @@ export default function SkillsPage() {
                 </div>
               </div>
               <div className="flex items-center gap-1">
-                <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColors[r.status] || 'bg-gray-800 text-gray-500'}`}>{r.status}</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded ${enabled ? 'bg-green-900/30 text-green-400' : 'bg-gray-800 text-gray-500'}`}>
+                  {enabled ? '启用' : '禁用'}
+                </span>
                 <span className={`text-[10px] px-1.5 py-0.5 rounded ${typeColors[r.skill_type] || 'bg-gray-800 text-gray-500'}`}>{r.skill_type}</span>
               </div>
             </div>
@@ -272,11 +283,11 @@ export default function SkillsPage() {
               <button onClick={() => handleViewRecord(r.record_id)} className="text-[10px] text-primary-400 hover:text-primary-300 flex items-center gap-1">
                 <Eye className="w-3 h-3" /> 查看
               </button>
-              {(r.status === 'DRAFT' || r.status === 'PENDING_APPROVAL') && (
-                <button onClick={() => handleApprove(r.record_id)} className="text-[10px] text-green-400 hover:text-green-300 flex items-center gap-1">
-                  <Check className="w-3 h-3" /> 批准
-                </button>
-              )}
+              <button onClick={() => handleToggleEnabled(r.record_id, !enabled)}
+                className={`text-[10px] flex items-center gap-1 ${enabled ? 'text-green-400 hover:text-green-300' : 'text-gray-500 hover:text-gray-300'}`}>
+                {enabled ? <ToggleRight className="w-3.5 h-3.5" /> : <ToggleLeft className="w-3.5 h-3.5" />}
+                {enabled ? '禁用' : '启用'}
+              </button>
               {!r.is_builtin && (
                 <button onClick={() => handleDelete(r.record_id)} className="text-[10px] text-gray-500 hover:text-red-400 flex items-center gap-1 ml-auto">
                   <Trash2 className="w-3 h-3" /> 删除
@@ -284,7 +295,8 @@ export default function SkillsPage() {
               )}
             </div>
           </div>
-        ))}
+          )
+        })}
       </div>
       {loading && <div className="text-center py-8 text-gray-500">加载中...</div>}
       {!loading && filtered.length === 0 && <div className="text-center py-8 text-gray-600">暂无记录</div>}

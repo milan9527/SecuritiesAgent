@@ -106,8 +106,10 @@ async def chat_with_agent(
     import json as _json
 
     session_id = request.session_id or f"chat-{current_user.id}-{uuid.uuid4().hex[:8]}"
+    # AgentCore Runtime 要求 session_id >= 33 字符。必须确定性补齐, 不能每次生成新 UUID,
+    # 否则同一前端会话每条消息都落到不同 session_id, 对话被拆散、上下文丢失。
     if len(session_id) < 33:
-        session_id = f"{session_id}-{uuid.uuid4().hex}"
+        session_id = (session_id + "-" + ("0" * 33))[:48]
 
     context_prompt = (
         f"[用户: {current_user.full_name or current_user.username}, "
