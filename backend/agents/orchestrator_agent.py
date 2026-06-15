@@ -215,6 +215,8 @@ def _build_options(session_id: str = "default", actor_id: str = "system") -> Cla
         skills="all",
         permission_mode="bypassPermissions",
         env={"CLAUDE_CONFIG_DIR": config_dir},  # 会话历史落 EFS, 跨容器持久
+        # 浏览器快照/截图等 MCP 工具返回体很大, 默认 1MB stdout 缓冲会溢出 → 调到 32MB
+        max_buffer_size=32 * 1024 * 1024,
     )
     if existing:
         opts["resume"] = sid_uuid          # 续接已有会话 (加载历史)
