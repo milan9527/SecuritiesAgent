@@ -14,9 +14,8 @@ from config.settings import get_settings
 
 settings = get_settings()
 
-# In-memory lock to prevent duplicate invocations for the same session
-_active_sessions: dict[str, threading.Event] = {}
-_session_results: dict[str, str] = {}
+# 每个 session 一把锁: 串行化同一会话的并发调用 (不缓存结果, 每条消息真实调用 Agent)
+_active_sessions: dict[str, threading.Lock] = {}
 _session_lock = threading.Lock()
 
 
@@ -53,63 +52,33 @@ def invoke_runtime_agent(
     session_id: str = "default",
     user_id: str = "anonymous",
 ) -> str:
-    """调用AgentCore Runtime上的Agent
-    包含去重逻辑: 相同session_id的请求不会重复调用Agent
+    """调用 AgentCore Runtime 上的 Agent。
+
+    并发去重: 仅当**同一 session 当前正有一次调用在跑**时, 才合并/串行,
+    避免同一会话被并发重复触发。
+    注意: 绝不缓存"已完成"的结果跨多轮复用 —— 每条新消息都必须真正发给 Agent,
+    否则同一会话后续回答会一直返回第一条的旧答案。
     """
-    # Deduplication: if same session is already running, wait for its result
+    # 串行化: 同一 session 同时只允许一次调用在跑 (避免并发重复触发);
+    # 不同消息仍各自真实调用 Agent。
     with _session_lock:
-        if session_id in _active_sessions:
-            print(f"[RuntimeClient] Session {session_id[:40]} already running, waiting for result...")
-            event = _active_sessions[session_id]
-        else:
-            event = None
+        lock = _active_sessions.get(session_id)
+        if lock is None:
+            lock = threading.Lock()
+            _active_sessions[session_id] = lock
 
-    if event:
-        # Wait for the existing invocation to complete (max 10 min)
-        event.wait(timeout=600)
-        result = _session_results.get(session_id, "")
-        if result:
-            print(f"[RuntimeClient] Returning cached result for {session_id[:40]}")
-            return result
-        # If no result after waiting, proceed with new invocation
-
-    # Mark session as active
-    done_event = threading.Event()
-    with _session_lock:
-        _active_sessions[session_id] = done_event
-
-    try:
+    with lock:
         agent_arn = _get_agent_arn()
         if not agent_arn:
-            result = _invoke_local(prompt, session_id, user_id)
-        else:
-            try:
-                result = _invoke_runtime(agent_arn, prompt, session_id, user_id)
-            except Exception as e:
-                error_msg = str(e)
-                print(f"[RuntimeClient] Runtime invoke failed: {error_msg}")
-                if "not found" in error_msg.lower() or "not ready" in error_msg.lower():
-                    result = _invoke_local(prompt, session_id, user_id)
-                else:
-                    raise
-
-        # Cache result and signal waiting threads
-        with _session_lock:
-            _session_results[session_id] = result
-        done_event.set()
-        return result
-    except Exception as e:
-        done_event.set()
-        raise
-    finally:
-        # Clean up after 5 min
-        def _cleanup():
-            import time
-            time.sleep(300)
-            with _session_lock:
-                _active_sessions.pop(session_id, None)
-                _session_results.pop(session_id, None)
-        threading.Thread(target=_cleanup, daemon=True).start()
+            return _invoke_local(prompt, session_id, user_id)
+        try:
+            return _invoke_runtime(agent_arn, prompt, session_id, user_id)
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[RuntimeClient] Runtime invoke failed: {error_msg}")
+            if "not found" in error_msg.lower() or "not ready" in error_msg.lower():
+                return _invoke_local(prompt, session_id, user_id)
+            raise
 
 
 def _invoke_local(prompt: str, session_id: str, user_id: str) -> str:
@@ -123,16 +92,17 @@ def _invoke_runtime(agent_arn: str, prompt: str, session_id: str, user_id: str) 
     client = boto3.client("bedrock-agentcore", region_name=settings.AWS_REGION,
                           config=BotoConfig(read_timeout=600, connect_timeout=10))
 
+    # Session ID must be >= 33 chars for AgentCore Runtime.
+    # 确定性补齐: 同一 session_id 每次得到相同结果, 保证多轮对话落到同一 Runtime session。
+    # 先补齐再构建 payload, 保证 runtimeSessionId 与 payload 内的 session_id 一致。
+    if len(session_id) < 33:
+        session_id = (session_id + "-" + ("0" * 33))[:48]
+
     payload = json.dumps({
         "prompt": prompt,
         "session_id": session_id,
         "user_id": user_id,
     })
-
-    # Session ID must be >= 33 chars for AgentCore Runtime.
-    # 确定性补齐: 同一 session_id 每次得到相同结果, 保证多轮对话落到同一 Runtime session。
-    if len(session_id) < 33:
-        session_id = (session_id + "-" + ("0" * 33))[:48]
 
     response = client.invoke_agent_runtime(
         agentRuntimeArn=agent_arn,
