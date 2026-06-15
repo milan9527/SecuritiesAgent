@@ -172,55 +172,47 @@ class CreateRecordRequest(BaseModel):
 
 @router.post("/registry")
 async def create_registry_record(request: CreateRecordRequest, current_user: User = Depends(get_current_user)):
-    """创建新的Registry记录"""
-    if not REGISTRY_ID:
-        return {"error": "Registry未配置"}
+    """创建/发布一个 Skill —— 写入 EFS .claude/skills (agent 自动读取), Registry 可选。"""
+    if not request.name:
+        return {"error": "请输入名称"}
     try:
-        client = _get_ctrl_client()
-        r = client.create_registry_record(
-            registryId=REGISTRY_ID,
-            name=request.name,
-            descriptorType="AGENT_SKILLS",
-            descriptors={"agentSkills": {"skillMd": {"inlineContent": request.content or f"---\nname: {request.name}\ndescription: {request.description}\n---\n\n# {request.name}\n\n{request.description}\n"}}},
-            recordVersion=request.version,
-            description=request.description[:200],
-        )
-        record_id = r["recordArn"].split("/")[-1]
-        # Auto-submit for approval
-        time.sleep(1)
-        try:
-            client.submit_registry_record_for_approval(registryId=REGISTRY_ID, recordId=record_id)
-        except Exception:
-            pass
-        return {"record_id": record_id, "name": request.name, "status": "PENDING_APPROVAL"}
+        from agents.skill_store import write_skill
+        content = request.content or f"# {request.name}\n\n{request.description}\n"
+        info = write_skill(request.name, content, request.description)
+        registry_status = _publish_to_registry_optional(info["name"], content, request.description)
+        return {
+            "record_id": info["name"], "name": info["name"], "status": "INSTALLED",
+            "path": info["path"], "registry": registry_status,
+            "message": f"Skill '{info['name']}' 已发布, agent 下次调用即可自动使用",
+        }
     except Exception as e:
         return {"error": str(e)[:200]}
 
 
 @router.put("/registry/{record_id}/status")
 async def update_record_status(record_id: str, status: str = "APPROVED", current_user: User = Depends(get_current_user)):
-    """更新Registry记录状态 (APPROVED/REJECTED/DEPRECATED)"""
-    if not REGISTRY_ID:
-        return {"error": "Registry未配置"}
-    try:
-        client = _get_ctrl_client()
-        client.update_registry_record_status(registryId=REGISTRY_ID, recordId=record_id, status=status)
-        return {"success": True, "record_id": record_id, "status": status}
-    except Exception as e:
-        return {"error": str(e)[:200]}
+    """更新状态。EFS skill 一旦安装即生效, 无审批流程, 直接返回成功。"""
+    if REGISTRY_ID:
+        try:
+            _get_ctrl_client().update_registry_record_status(registryId=REGISTRY_ID, recordId=record_id, status=status)
+        except Exception:
+            pass
+    return {"success": True, "record_id": record_id, "status": status}
 
 
 @router.delete("/registry/{record_id}")
 async def delete_registry_record(record_id: str, current_user: User = Depends(get_current_user)):
-    """删除Registry记录"""
-    if not REGISTRY_ID:
-        return {"error": "Registry未配置"}
-    try:
-        client = _get_ctrl_client()
-        client.delete_registry_record(registryId=REGISTRY_ID, recordId=record_id)
-        return {"success": True}
-    except Exception as e:
-        return {"error": str(e)[:200]}
+    """删除 Skill —— 从 EFS .claude/skills 移除 (内置 skill 不可删); 同时尽力清理 Registry。"""
+    from agents.skill_store import delete_skill
+    removed = delete_skill(record_id)
+    if REGISTRY_ID:
+        try:
+            _get_ctrl_client().delete_registry_record(registryId=REGISTRY_ID, recordId=record_id)
+        except Exception:
+            pass
+    if not removed:
+        return {"success": False, "error": "内置 skill 不可删除或不存在"}
+    return {"success": True, "record_id": record_id}
 
 
 # ═══════════════════════════════════════════════════════
