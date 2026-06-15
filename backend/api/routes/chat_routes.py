@@ -125,29 +125,9 @@ async def chat_with_agent(
     except Exception:
         pass
 
-    # 多轮对话记忆: SDK 的 query() 是无状态的, 每次调用都是全新会话。
-    # 因此把本 session 的历史消息回放进 prompt, 让 Agent 看到上下文。
-    try:
-        hist_rows = (await db.execute(
-            select(ChatMessage)
-            .where(ChatMessage.session_id == session_id, ChatMessage.user_id == current_user.id)
-            .order_by(ChatMessage.created_at.desc())
-            .limit(12)
-        )).scalars().all()
-        hist = list(reversed(hist_rows))  # 时间正序
-        if hist:
-            lines = []
-            for m in hist:
-                role = "用户" if m.role == "user" else "助手"
-                lines.append(f"{role}: {m.content[:1500]}")
-            history_block = "\n".join(lines)
-            context_prompt = (
-                "以下是本次会话的历史对话(供你理解上下文, 不要重复回答历史问题):\n"
-                f"{history_block}\n\n"
-                f"现在用户的最新问题是:\n{request.message}"
-            )
-    except Exception as e:
-        print(f"[Chat] history inject failed: {e}")
+    # 多轮对话记忆由 Claude Agent SDK 原生会话管理处理:
+    # orchestrator 把会话 transcript 写到 EFS 上的 CLAUDE_CONFIG_DIR, 同一 session_id
+    # 自动 resume 加载历史。这里无需再手动回放历史。
 
     # Agent 始终可见全部 skill (含导入的, 由 orchestrator skills="all" 从 EFS 加载),
     # 不再做 skill 过滤 / Smart Select。

@@ -25,13 +25,32 @@ from opentelemetry.trace import StatusCode
 
 tracer = trace.get_tracer("securities-trading-agent", "1.0.0")
 
+import uuid as _uuid
 from claude_agent_sdk import (
     query,
     ClaudeAgentOptions,
     AssistantMessage,
     ResultMessage,
     TextBlock,
+    get_session_info,
 )
+
+# 用 SDK 原生会话管理: 会话 transcript 由子进程写到 CLAUDE_CONFIG_DIR,
+# 指向 EFS 的 sessions 子目录, 跨临时容器持久, resume 时自动加载历史。
+def _session_uuid(session_id: str) -> str:
+    """把任意业务 session_id 映射为确定性 UUID (SDK 的 resume/session_id 要求 UUID)。"""
+    try:
+        return str(_uuid.UUID(session_id))  # 本身就是 UUID 则直接用
+    except (ValueError, AttributeError):
+        return str(_uuid.uuid5(_uuid.NAMESPACE_URL, f"securities-trading-cc/{session_id}"))
+
+
+def _claude_config_dir() -> str:
+    """SDK 会话 transcript 存储目录 (EFS 上, 跨容器持久)。"""
+    root = os.environ.get("AGENTCORE_SKILLS_ROOT", "").strip() or _BAKED_SKILLS_ROOT
+    d = os.path.join(root, ".claude_sessions")
+    os.makedirs(d, exist_ok=True)
+    return d
 
 from agents.model_loader import configure_bedrock_env
 from agents.sdk_tools import securities_mcp_server, all_tool_names
@@ -106,22 +125,43 @@ def seed_skills_to(root: str) -> None:
 
 
 def _build_options(session_id: str = "default", actor_id: str = "system") -> ClaudeAgentOptions:
-    """构建 ClaudeAgentOptions: Bedrock 模型 + MCP工具 + 子Agent + Skill"""
-    model_id = configure_bedrock_env()
+    """构建 ClaudeAgentOptions: Bedrock 模型 + MCP工具 + 子Agent + Skill + EFS 会话续接。
 
+    多轮记忆: SDK 原生会话管理。会话 transcript 写到 EFS 上的 CLAUDE_CONFIG_DIR,
+    若该 session 已存在历史则 resume 续接, 否则用固定 session_id 新建。
+    """
+    model_id = configure_bedrock_env()
     project_cwd = resolve_skills_root()
 
-    return ClaudeAgentOptions(
+    config_dir = _claude_config_dir()
+    # 让本进程的 get_session_info() 也从 EFS 上的 config dir 解析 (与子进程一致)
+    os.environ["CLAUDE_CONFIG_DIR"] = config_dir
+    sid_uuid = _session_uuid(session_id)
+    # 该 session 之前是否已有 transcript (决定 resume 还是新建)。
+    # directory 传 project_cwd (transcript 存于 <config_dir>/projects/<slug(cwd)>/<uuid>.jsonl)
+    existing = None
+    try:
+        existing = get_session_info(sid_uuid, directory=project_cwd)
+    except Exception:
+        existing = None
+
+    opts = dict(
         model=model_id,
         system_prompt=ORCHESTRATOR_SYSTEM_PROMPT,
         mcp_servers={"securities": securities_mcp_server},
-        allowed_tools=all_tool_names() + ["Agent"],  # Agent: 允许委派子Agent
+        allowed_tools=all_tool_names() + ["Agent"],
         agents=build_subagents(),
         cwd=project_cwd,
-        setting_sources=["project"],  # 从 <cwd>/.claude/skills 加载 Skill
+        setting_sources=["project"],
         skills="all",
-        permission_mode="bypassPermissions",  # 后端服务无人值守, 自动批准工具
+        permission_mode="bypassPermissions",
+        env={"CLAUDE_CONFIG_DIR": config_dir},  # 会话历史落 EFS, 跨容器持久
     )
+    if existing:
+        opts["resume"] = sid_uuid          # 续接已有会话 (加载历史)
+    else:
+        opts["session_id"] = sid_uuid      # 新会话, 用确定性 UUID
+    return ClaudeAgentOptions(**opts)
 
 
 def _detect_effort(prompt: str) -> str:
