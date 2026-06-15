@@ -101,36 +101,34 @@ _BAKED_SKILLS_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def resolve_skills_root() -> str:
     """解析 Skill 根目录 (含 .claude/skills 子目录)。
 
-    优先级:
-    1. 环境变量 AGENTCORE_SKILLS_ROOT (AgentCore Runtime 上指向 EFS 挂载点,
-       如 /mnt/skills) —— EFS 跨 session/agent 共享、可读写、持久,
-       用户在 Skills 管理页导入/AI生成的 skill 落在此处, 所有会话即时可用。
-    2. 镜像内置目录 (本地开发 / 无 EFS 时)。
-    若 EFS 根目录尚无 .claude/skills, 用内置副本做一次性 seed。
+    Skill 只存在于 EFS (AGENTCORE_SKILLS_ROOT, 如 /mnt/skills): 跨 session/agent
+    共享、可读写、持久; 用户导入/AI生成的 skill 也落此处。镜像不再打包 .claude/skills,
+    内置的 4 个 skill 在 EFS 首次为空时从 agents.builtin_skills 常量 seed。
+    本地开发无 EFS 时, 回退到 backend 目录 (并 seed 内置 skill 到那里)。
     """
-    efs_root = os.environ.get("AGENTCORE_SKILLS_ROOT", "").strip()
-    if efs_root:
-        seed_skills_to(efs_root)
-        return efs_root
-    return _BAKED_SKILLS_ROOT
+    root = os.environ.get("AGENTCORE_SKILLS_ROOT", "").strip() or _BAKED_SKILLS_ROOT
+    seed_skills_to(root)
+    return root
 
 
 def seed_skills_to(root: str) -> None:
-    """把内置 .claude/skills 同步到目标根目录 (缺失才补, 不覆盖用户改动)。"""
-    import shutil
-    src = os.path.join(_BAKED_SKILLS_ROOT, ".claude", "skills")
+    """把内置 skill (常量) 写到 <root>/.claude/skills (缺失才补, 不覆盖已有/用户改动)。"""
+    from agents.builtin_skills import BUILTIN_SKILLS
     dst = os.path.join(root, ".claude", "skills")
-    if not os.path.isdir(src):
-        return
     os.makedirs(dst, exist_ok=True)
-    for name in os.listdir(src):
-        s = os.path.join(src, name)
-        d = os.path.join(dst, name)
-        if os.path.isdir(s) and not os.path.exists(d):
-            try:
-                shutil.copytree(s, d)
-            except Exception as e:  # noqa: BLE001
-                print(f"[skills] seed {name} failed: {e}")
+    for name, content in BUILTIN_SKILLS.items():
+        sk_dir = os.path.join(dst, name)
+        md = os.path.join(sk_dir, "SKILL.md")
+        md_disabled = md + ".disabled"
+        # 已存在 (启用或禁用) 就跳过, 不覆盖
+        if os.path.exists(md) or os.path.exists(md_disabled):
+            continue
+        try:
+            os.makedirs(sk_dir, exist_ok=True)
+            with open(md, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception as e:  # noqa: BLE001
+            print(f"[skills] seed {name} failed: {e}")
 
 
 def _build_options(session_id: str = "default", actor_id: str = "system") -> ClaudeAgentOptions:

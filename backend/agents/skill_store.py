@@ -26,10 +26,30 @@ def skills_root() -> str:
 
 
 def skills_dir() -> str:
-    """`.claude/skills` 绝对路径, 不存在则创建。"""
+    """`.claude/skills` 绝对路径, 不存在则创建; 首次为空时 seed 内置 skill (常量)。"""
     d = os.path.join(skills_root(), ".claude", "skills")
     os.makedirs(d, exist_ok=True)
+    _seed_builtins(d)
     return d
+
+
+def _seed_builtins(dst: str) -> None:
+    """EFS 首次为空时, 从常量写入内置 skill (镜像不打包 skill)。缺失才补。"""
+    try:
+        from agents.builtin_skills import BUILTIN_SKILLS
+    except Exception:
+        return
+    for name, content in BUILTIN_SKILLS.items():
+        sk_dir = os.path.join(dst, name)
+        md = os.path.join(sk_dir, "SKILL.md")
+        if os.path.exists(md) or os.path.exists(md + ".disabled"):
+            continue
+        try:
+            os.makedirs(sk_dir, exist_ok=True)
+            with open(md, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception:
+            pass
 
 
 def sanitize_name(name: str) -> str:

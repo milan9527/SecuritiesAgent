@@ -9,4 +9,7 @@ tests/
 .env
 .bedrock_agentcore/
 node_modules/
-# 注意: 不要忽略 .claude/skills —— 镜像需要内置 skill 以 seed 到 EFS
+# 不把 skill 打包进镜像 —— skill 只存在于 EFS; 内置 skill 由 agents/builtin_skills.py
+# 常量在 EFS 首次为空时 seed。
+.claude/
+.claude_sessions/
