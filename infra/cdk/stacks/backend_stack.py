@@ -52,6 +52,21 @@ class BackendStack(Stack):
         )
         # Bedrock (LLM + AgentCore)
         task_role.add_managed_policy(iam.ManagedPolicy.from_aws_managed_policy_name("AmazonBedrockFullAccess"))
+        # AgentCore Runtime/Browser/CodeInterpreter/Registry invoke (NOT covered by AmazonBedrockFullAccess)
+        task_role.add_to_policy(iam.PolicyStatement(
+            actions=[
+                "bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:InvokeAgentRuntimeForUser",
+                "bedrock-agentcore:InvokeCodeInterpreter", "bedrock-agentcore:InvokeBrowser",
+                "bedrock-agentcore:StartCodeInterpreterSession", "bedrock-agentcore:StartBrowserSession",
+                "bedrock-agentcore:GetCodeInterpreterSession", "bedrock-agentcore:GetBrowserSession",
+                "bedrock-agentcore:StopCodeInterpreterSession", "bedrock-agentcore:StopBrowserSession",
+                "bedrock-agentcore:ListBrowserSessions",
+                "bedrock-agentcore:CreateEvent", "bedrock-agentcore:ListEvents",
+                "bedrock-agentcore:RetrieveMemoryRecords",
+                "bedrock-agentcore:SearchRegistryRecords", "bedrock-agentcore:GetRegistryRecord",
+            ],
+            resources=["*"],
+        ))
         # SES (HTML email notifications)
         task_role.add_managed_policy(iam.ManagedPolicy.from_aws_managed_policy_name("AmazonSESFullAccess"))
         # SNS (fallback notifications)

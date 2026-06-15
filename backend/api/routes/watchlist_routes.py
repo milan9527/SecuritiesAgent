@@ -11,6 +11,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.database import get_db
 from db.models import User, Watchlist, WatchlistItem
 from api.auth import get_current_user
+import uuid as _uuid
+
+
+def _valid_uuid(value: str) -> bool:
+    """路径参数是否为合法 UUID (避免非法 id 触发 Postgres cast 500)"""
+    try:
+        _uuid.UUID(str(value))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
 
 router = APIRouter(prefix="/api/watchlist", tags=["自选股"])
 
@@ -90,6 +101,8 @@ async def add_stock(
     db: AsyncSession = Depends(get_db),
 ):
     """添加股票到自选"""
+    if not _valid_uuid(watchlist_id):
+        raise HTTPException(status_code=404, detail="自选列表不存在")
     wl_result = await db.execute(
         select(Watchlist).where(Watchlist.id == watchlist_id, Watchlist.user_id == current_user.id)
     )
@@ -128,6 +141,8 @@ async def remove_stock(
     db: AsyncSession = Depends(get_db),
 ):
     """从自选中移除股票"""
+    if not _valid_uuid(watchlist_id):
+        raise HTTPException(status_code=404, detail="未找到该股票")
     result = await db.execute(
         select(WatchlistItem).join(Watchlist).where(
             WatchlistItem.watchlist_id == watchlist_id,
