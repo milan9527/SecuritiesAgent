@@ -23,11 +23,6 @@ router = APIRouter(prefix="/api/chat", tags=["Agent对话"])
 settings = get_settings()
 
 
-class SmartSelectRequest(BaseModel):
-    query: str
-    max_results: int = 5
-
-
 @router.get("/history")
 async def get_chat_history(
     session_id: str = Query(default="", description="Session ID, empty for all sessions"),
@@ -100,27 +95,6 @@ async def get_chat_sessions(
     } for s in sessions]}
 
 
-@router.post("/smart-select")
-async def smart_select_skills(
-    request: SmartSelectRequest,
-    current_user: User = Depends(get_current_user),
-):
-    """Registry语义搜索"""
-    registry_id = settings.AGENTCORE_REGISTRY_ID
-    if not registry_id:
-        return {"skills": []}
-    try:
-        import boto3
-        client = boto3.client("bedrock-agentcore", region_name=settings.AWS_REGION)
-        registry_arn = f"arn:aws:bedrock-agentcore:{settings.AWS_REGION}:632930644527:registry/{registry_id}"
-        response = client.search_registry_records(
-            registryIds=[registry_arn], searchQuery=request.query, maxResults=request.max_results,
-        )
-        return {"skills": [{"name": r.get("name", ""), "status": r.get("status", "")} for r in response.get("registryRecords", [])]}
-    except Exception as e:
-        return {"skills": [], "error": str(e)[:200]}
-
-
 @router.post("/", response_model=ChatResponse)
 async def chat_with_agent(
     request: ChatRequest,
@@ -149,10 +123,8 @@ async def chat_with_agent(
     except Exception:
         pass
 
-    # Add enabled skills filter
-    if request.enabled_skills and len(request.enabled_skills) < 20:
-        skills_str = ", ".join(request.enabled_skills)
-        context_prompt += f"\n\n[SKILL FILTER] 用户只启用了以下skills: {skills_str}。严格限制: 只使用这些skill对应的工具和子Agent。未列出的skill禁止调用。"
+    # Agent 始终可见全部 skill (含导入的, 由 orchestrator skills="all" 从 EFS 加载),
+    # 不再做 skill 过滤 / Smart Select。
 
     # Save user message to DB
     user_msg = ChatMessage(

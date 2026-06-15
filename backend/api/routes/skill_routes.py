@@ -53,8 +53,9 @@ def _efs_records() -> list[dict]:
     recs = []
     for s in list_skills():
         recs.append({
+            # EFS skill 安装即生效, 用 APPROVED 兼容前端过滤 (前端只显示 APPROVED)
             "record_id": s["name"], "name": s["name"], "display_name": s["name"],
-            "status": "INSTALLED", "version": "1.0.0", "description": s["description"],
+            "status": "APPROVED", "version": "1.0.0", "description": s["description"],
             "type": "AGENT_SKILLS", "skill_type": "builtin" if s["builtin"] else "external",
             "is_builtin": s["builtin"], "source": "efs", "created_at": "", "updated_at": "",
         })

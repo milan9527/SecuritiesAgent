@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Send, Bot, User, Sparkles, Zap, ToggleLeft, ToggleRight, MessageSquarePlus, History, Clock, ChevronLeft, Trash2, Puzzle } from 'lucide-react'
+import { Send, Bot, User, Sparkles, MessageSquarePlus, History, Clock, ChevronLeft, Trash2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import api from '../services/api'
 import toast from 'react-hot-toast'
 
-interface Message { role: 'user' | 'assistant'; content: string; timestamp: string; smartSkills?: string[] }
+interface Message { role: 'user' | 'assistant'; content: string; timestamp: string }
 
 // Agent presets with default skill mappings
 const agentPresets: Record<string, { label: string; icon: string; skills: string[] }> = {
@@ -32,12 +32,8 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false)
   const [agentType, setAgentType] = useState('orchestrator')
   const [sessionId, setSessionId] = useState(() => `chat-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`)
-  const [allSkills, setAllSkills] = useState<any[]>([])
-  const [enabledSkills, setEnabledSkills] = useState<Set<string>>(new Set())
-  const [smartSelect, setSmartSelect] = useState(true)
   const [sessions, setSessions] = useState<any[]>([])
   const [showSessions, setShowSessions] = useState(true)
-  const [showSkills, setShowSkills] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const refreshSessions = useCallback(() => {
@@ -46,30 +42,7 @@ export default function ChatPage() {
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
-  useEffect(() => {
-    // Load skills from AgentCore Registry
-    api.get('/api/skills/registry').then(r => {
-      const records = (r.data.records || []).filter((s: any) => s.status === 'APPROVED')
-      setAllSkills(records.map((s: any) => ({
-        id: s.name,
-        name: s.display_name || s.name,
-        description: s.description,
-        tools: [],
-        registry_name: s.name,
-        skill_type: s.skill_type,
-      })))
-      setEnabledSkills(new Set(records.map((s: any) => s.name)))
-    }).catch(() => {})
-    refreshSessions()
-  }, [refreshSessions])
-
-  // When agent type changes, update enabled skills
-  useEffect(() => {
-    const preset = agentPresets[agentType]
-    if (preset) {
-      setEnabledSkills(new Set(preset.skills))
-    }
-  }, [agentType])
+  useEffect(() => { refreshSessions() }, [refreshSessions])
 
   const loadSession = async (sid: string) => {
     try {
@@ -96,15 +69,6 @@ export default function ChatPage() {
     } catch {}
   }
 
-  const toggleSkill = (name: string) => {
-    setEnabledSkills(prev => {
-      const next = new Set(prev)
-      if (next.has(name)) next.delete(name)
-      else next.add(name)
-      return next
-    })
-  }
-
   const handleSend = async () => {
     if (!input.trim() || loading) return
     const userMsg: Message = { role: 'user', content: input, timestamp: new Date().toISOString() }
@@ -112,16 +76,6 @@ export default function ChatPage() {
     const currentInput = input
     setInput('')
     setLoading(true)
-
-    let smartSkills: string[] = []
-
-    // Smart Select: search Registry for relevant skills
-    if (smartSelect) {
-      try {
-        const sr = await api.post('/api/chat/smart-select', { query: currentInput, max_results: 5 })
-        smartSkills = (sr.data.skills || []).map((s: any) => s.name)
-      } catch {}
-    }
 
     try {
       // Use SSE streaming to avoid CloudFront/ALB timeout
@@ -132,7 +86,7 @@ export default function ChatPage() {
       const response = await fetch(`${baseUrl}/api/chat/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ message: currentInput, session_id: sessionId, agent_type: agentType, enabled_skills: Array.from(enabledSkills) }),
+        body: JSON.stringify({ message: currentInput, session_id: sessionId, agent_type: agentType }),
       })
 
       if (!response.ok) throw new Error(`Request failed with status ${response.status}`)
@@ -181,7 +135,7 @@ export default function ChatPage() {
       if (resultData) {
         setMessages(prev => [...prev, {
           role: 'assistant', content: resultData.response,
-          timestamp: resultData.timestamp || new Date().toISOString(), smartSkills,
+          timestamp: resultData.timestamp || new Date().toISOString(),
         }])
       } else {
         throw new Error('No response received')
@@ -195,11 +149,8 @@ export default function ChatPage() {
     setLoading(false)
   }
 
-  // Get contextual samples based on enabled skills
-  const activeSamples = Array.from(enabledSkills).flatMap(sk => samplesByFocus[sk] || []).slice(0, 6)
-
-  // Skills now come directly from Registry with registry_name as ID
-  const getSkillId = (skill: any) => skill.registry_name || skill.id || skill.name
+  // 按当前 agent 预设给出示例提问
+  const activeSamples = (agentPresets[agentType]?.skills || []).flatMap(sk => samplesByFocus[sk] || []).slice(0, 6)
 
   return (
     <div className="flex h-[calc(100vh-3rem)]">
@@ -289,7 +240,7 @@ export default function ChatPage() {
             <div>
               <h1 className="text-lg font-bold text-white">Agent Playground</h1>
               <p className="text-[10px] text-gray-500">
-                {enabledSkills.size} skills enabled · AgentCore Memory · {smartSelect ? 'Smart Select ON' : 'Smart Select OFF'}
+                全部 Skill 自动可用 · AgentCore Memory
               </p>
             </div>
           </div>
@@ -301,17 +252,6 @@ export default function ChatPage() {
                 {preset.icon} {preset.label}
               </button>
             ))}
-            {/* Smart Select toggle */}
-            <button onClick={() => setSmartSelect(!smartSelect)}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] ${smartSelect ? 'bg-accent-gold/20 text-accent-gold border border-accent-gold/30' : 'text-gray-500 border border-surface-border'}`}>
-              <Zap className="w-3 h-3" /> Smart Select
-              {smartSelect ? <ToggleRight className="w-4 h-4" /> : <ToggleLeft className="w-4 h-4" />}
-            </button>
-            {/* Skill panel toggle */}
-            <button onClick={() => setShowSkills(!showSkills)}
-              className={`p-1.5 rounded-lg transition-colors ${showSkills ? 'bg-primary-500/20 text-primary-300' : 'text-gray-500 hover:text-gray-300'}`}>
-              <Puzzle className="w-4 h-4" />
-            </button>
           </div>
         </div>
 
@@ -376,13 +316,6 @@ export default function ChatPage() {
                       保存到知识库
                     </button>
                   )}
-                  {msg.smartSkills && msg.smartSkills.length > 0 && (
-                    <div className="flex gap-1">
-                      {msg.smartSkills.map(s => (
-                        <span key={s} className="text-[8px] px-1 py-0.5 bg-accent-gold/10 text-accent-gold rounded">{s}</span>
-                      ))}
-                    </div>
-                  )}
                 </div>
               </div>
               {msg.role === 'user' && (
@@ -423,59 +356,6 @@ export default function ChatPage() {
             </button>
           </div>
         </div>
-      </div>
-
-      {/* Right panel: Skill Control (collapsible) */}
-      <div className={`${showSkills ? 'w-72' : 'w-0'} transition-all duration-200 overflow-hidden border-l border-surface-border bg-surface-card`}>
-        <div className="w-72 overflow-y-auto h-full">
-        <div className="p-4 border-b border-surface-border">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-sm font-semibold text-white">Skill Control</h2>
-            <span className="text-[10px] px-2 py-0.5 bg-primary-500/20 text-primary-300 rounded-full">
-              {enabledSkills.size}/{allSkills.length}
-            </span>
-          </div>
-          <p className="text-[10px] text-gray-500 mb-3">切换Skills控制Agent可用工具</p>
-          <div className="flex gap-2">
-            <button onClick={() => setEnabledSkills(new Set(allSkills.map((s: any) => getSkillId(s))))}
-              className="flex-1 text-[10px] py-1 rounded bg-primary-500/20 text-primary-300 hover:bg-primary-500/30">
-              Enable All
-            </button>
-            <button onClick={() => setEnabledSkills(new Set())}
-              className="flex-1 text-[10px] py-1 rounded bg-red-900/20 text-red-400 hover:bg-red-900/30">
-              Disable All
-            </button>
-          </div>
-        </div>
-
-        <div className="p-2 space-y-1">
-          {allSkills.map((skill: any) => {
-            const regName = getSkillId(skill)
-            const isEnabled = enabledSkills.has(regName)
-            return (
-              <div key={skill.id}
-                className={`p-2.5 rounded-lg border transition-all cursor-pointer ${isEnabled ? 'bg-surface-hover border-primary-500/30' : 'bg-surface-dark border-surface-border/30 opacity-50'}`}
-                onClick={() => toggleSkill(regName)}>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className={`w-2 h-2 rounded-full ${isEnabled ? 'bg-green-400' : 'bg-gray-600'}`} />
-                    <p className="text-xs text-white font-medium">{skill.name}</p>
-                  </div>
-                </div>
-                <p className="text-[9px] text-gray-500 mt-1 ml-4">{skill.description?.slice(0, 50)}</p>
-                {skill.tools?.length > 0 && (
-                  <div className="flex gap-1 flex-wrap mt-1.5 ml-4">
-                    {skill.tools.slice(0, 4).map((t: string) => (
-                      <span key={t} className="text-[8px] px-1 py-0.5 bg-surface-dark rounded text-accent-gold font-mono">⚡ {t}</span>
-                    ))}
-                    {skill.tools.length > 4 && <span className="text-[8px] text-gray-600">+{skill.tools.length - 4}</span>}
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      </div>
       </div>
     </div>
   )
