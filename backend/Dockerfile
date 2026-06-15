@@ -12,6 +12,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Claude Code CLI (required at runtime by claude-agent-sdk)
 RUN npm install -g @anthropic-ai/claude-code
 
+# uv/uvx — run the official AWS AgentCore MCP server (browser + code interpreter)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    cp /root/.local/bin/uv /usr/local/bin/uv && \
+    cp /root/.local/bin/uvx /usr/local/bin/uvx
+# 预拉取 MCP server, 避免运行时首次 uvx 拉包延迟
+RUN uvx --help >/dev/null 2>&1 || true
+
 # Install Python deps
 COPY pyproject.toml .
 RUN pip install --no-cache-dir -e . 2>/dev/null || pip install --no-cache-dir \
