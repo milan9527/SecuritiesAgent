@@ -26,40 +26,8 @@ REGISTRY_ID = _settings.AGENTCORE_REGISTRY_ID
 AWS_REGION = _settings.AWS_REGION
 
 
-def _get_ctrl_client():
-    import boto3
-    return boto3.client("bedrock-agentcore-control", region_name=AWS_REGION)
-
-
-def _get_dp_client():
-    import boto3
-    return boto3.client("bedrock-agentcore", region_name=AWS_REGION)
-
-
-def _publish_to_registry_optional(name: str, content: str, desc: str) -> dict:
-    """配置了 Registry 才发布 (增强, 非必需)。Agent 读 skill 走 EFS, 不依赖 Registry。"""
-    if not REGISTRY_ID:
-        return {"published": False, "reason": "registry_not_configured"}
-    try:
-        ctrl = _get_ctrl_client()
-        body = content if len(content.encode("utf-8")) <= 60000 else content[:50000]
-        r = ctrl.create_registry_record(
-            registryId=REGISTRY_ID, name=name[:100], descriptorType="AGENT_SKILLS",
-            descriptors={"agentSkills": {"skillMd": {"inlineContent": body}}},
-            recordVersion="1.0.0", description=desc[:200],
-        )
-        rid = r["recordArn"].split("/")[-1]
-        try:
-            ctrl.submit_registry_record_for_approval(registryId=REGISTRY_ID, recordId=rid)
-        except Exception:
-            pass
-        return {"published": True, "record_id": rid}
-    except Exception as e:
-        return {"published": False, "reason": str(e)[:150]}
-
-
 # ═══════════════════════════════════════════════════════
-# Builtin skill -> Registry name mapping
+# Builtin skill 名称映射 (展示用)
 # ═══════════════════════════════════════════════════════
 BUILTIN_SKILLS = {
     "market-data-skill": {"name": "行情数据技能", "type": "market", "file": "agents/skills/market_data_skill.py"},
@@ -75,11 +43,12 @@ BUILTIN_SKILLS = {
 
 
 # ═══════════════════════════════════════════════════════
-# Registry Records (核心API)
+# Skill 记录 API —— 全部基于 EFS .claude/skills (agent 实际读取处), 不再用 Registry
+# 路由路径保持 /registry* 不变, 避免前端改动
 # ═══════════════════════════════════════════════════════
 
 def _efs_records() -> list[dict]:
-    """把 EFS .claude/skills 下的 skill 表示成 registry-record 形状, 供前端列表展示。"""
+    """把 EFS .claude/skills 下的 skill 表示成记录形状, 供前端列表展示。"""
     from agents.skill_store import list_skills
     recs = []
     for s in list_skills():
@@ -95,72 +64,22 @@ def _efs_records() -> list[dict]:
 
 @router.get("/registry")
 async def list_registry_records(current_user: User = Depends(get_current_user)):
-    """列出 skill 记录。Registry 未配置时回退到 EFS .claude/skills (agent 实际读取处)。"""
-    if not REGISTRY_ID:
-        return {"records": _efs_records(), "source": "efs"}
-    try:
-        client = _get_ctrl_client()
-        resp = client.list_registry_records(registryId=REGISTRY_ID, maxResults=50)
-        # Deduplicate by name, keep APPROVED over others
-        by_name = {}
-        for r in resp.get("registryRecords", []):
-            name = r.get("name", "")
-            existing = by_name.get(name)
-            if not existing or (r.get("status") == "APPROVED" and existing.get("status") != "APPROVED"):
-                by_name[name] = r
-
-        records = []
-        for name, r in by_name.items():
-            builtin = BUILTIN_SKILLS.get(name, {})
-            records.append({
-                "record_id": r.get("recordId", ""),
-                "name": name,
-                "display_name": builtin.get("name", name),
-                "status": r.get("status", ""),
-                "version": r.get("recordVersion", ""),
-                "description": r.get("description", ""),
-                "type": r.get("descriptorType", ""),
-                "skill_type": builtin.get("type", "external"),
-                "is_builtin": name in BUILTIN_SKILLS,
-                "created_at": str(r.get("createdAt", "")),
-                "updated_at": str(r.get("updatedAt", "")),
-            })
-        # Sort: builtin first, then by name
-        records.sort(key=lambda x: (0 if x["is_builtin"] else 1, x["name"]))
-        return {"records": records, "registry_id": REGISTRY_ID}
-    except Exception as e:
-        return {"records": [], "error": str(e)[:200]}
+    """列出所有 skill (来自 EFS .claude/skills)。"""
+    return {"records": _efs_records(), "source": "efs"}
 
 
 @router.get("/registry/{record_id}")
 async def get_registry_record(record_id: str, current_user: User = Depends(get_current_user)):
-    """获取Registry记录详情(含完整内容)"""
-    if not REGISTRY_ID:
-        return {"error": "Registry未配置"}
-    try:
-        client = _get_ctrl_client()
-        r = client.get_registry_record(registryId=REGISTRY_ID, recordId=record_id)
-        record = r.get("registryRecord", r)
-
-        # Extract skill content
-        content = ""
-        descriptors = record.get("descriptors", {})
-        agent_skills = descriptors.get("agentSkills", {})
-        skill_md = agent_skills.get("skillMd", {})
-        content = skill_md.get("inlineContent", "")
-
-        return {
-            "record_id": record.get("recordId", record_id),
-            "name": record.get("name", ""),
-            "status": record.get("status", ""),
-            "version": record.get("recordVersion", ""),
-            "description": record.get("description", ""),
-            "type": record.get("descriptorType", ""),
-            "content": content,
-            "raw": _json.dumps(descriptors, default=str, indent=2)[:5000],
-        }
-    except Exception as e:
-        return {"error": str(e)[:200]}
+    """获取单个 skill 详情 + 完整 SKILL.md 内容 (来自 EFS)。"""
+    from agents.skill_store import read_skill
+    s = read_skill(record_id)
+    if not s:
+        return {"error": "Skill 不存在"}
+    return {
+        "record_id": s["name"], "name": s["name"], "status": "INSTALLED",
+        "version": "1.0.0", "description": s["description"], "type": "AGENT_SKILLS",
+        "is_builtin": s["builtin"], "content": s["content"], "source": "efs",
+    }
 
 
 class CreateRecordRequest(BaseModel):
@@ -172,17 +91,16 @@ class CreateRecordRequest(BaseModel):
 
 @router.post("/registry")
 async def create_registry_record(request: CreateRecordRequest, current_user: User = Depends(get_current_user)):
-    """创建/发布一个 Skill —— 写入 EFS .claude/skills (agent 自动读取), Registry 可选。"""
+    """创建/发布一个 Skill —— 写入 EFS .claude/skills, agent 自动读取。"""
     if not request.name:
         return {"error": "请输入名称"}
     try:
         from agents.skill_store import write_skill
         content = request.content or f"# {request.name}\n\n{request.description}\n"
         info = write_skill(request.name, content, request.description)
-        registry_status = _publish_to_registry_optional(info["name"], content, request.description)
         return {
             "record_id": info["name"], "name": info["name"], "status": "INSTALLED",
-            "path": info["path"], "registry": registry_status,
+            "path": info["path"],
             "message": f"Skill '{info['name']}' 已发布, agent 下次调用即可自动使用",
         }
     except Exception as e:
@@ -191,25 +109,15 @@ async def create_registry_record(request: CreateRecordRequest, current_user: Use
 
 @router.put("/registry/{record_id}/status")
 async def update_record_status(record_id: str, status: str = "APPROVED", current_user: User = Depends(get_current_user)):
-    """更新状态。EFS skill 一旦安装即生效, 无审批流程, 直接返回成功。"""
-    if REGISTRY_ID:
-        try:
-            _get_ctrl_client().update_registry_record_status(registryId=REGISTRY_ID, recordId=record_id, status=status)
-        except Exception:
-            pass
+    """EFS skill 安装即生效, 无审批流程, 直接返回成功。"""
     return {"success": True, "record_id": record_id, "status": status}
 
 
 @router.delete("/registry/{record_id}")
 async def delete_registry_record(record_id: str, current_user: User = Depends(get_current_user)):
-    """删除 Skill —— 从 EFS .claude/skills 移除 (内置 skill 不可删); 同时尽力清理 Registry。"""
+    """删除 Skill —— 从 EFS .claude/skills 移除 (内置 skill 不可删)。"""
     from agents.skill_store import delete_skill
     removed = delete_skill(record_id)
-    if REGISTRY_ID:
-        try:
-            _get_ctrl_client().delete_registry_record(registryId=REGISTRY_ID, recordId=record_id)
-        except Exception:
-            pass
     if not removed:
         return {"success": False, "error": "内置 skill 不可删除或不存在"}
     return {"success": True, "record_id": record_id}
@@ -313,14 +221,9 @@ Imported from: {url}
         # 写入 EFS .claude/skills —— agent 自动读取的位置 (无需 Registry)
         from agents.skill_store import write_skill
         info = write_skill(name, content, desc)
-
-        # Registry 发布为可选增强 (配置了才做, 失败不影响导入)
-        registry_status = _publish_to_registry_optional(info["name"], content, desc)
-
         return {
             "name": info["name"], "status": "INSTALLED",
             "path": info["path"], "content_length": info["bytes"],
-            "registry": registry_status,
             "message": f"Skill '{info['name']}' 已导入, agent 下次调用即可自动使用",
         }
     except Exception as e:
@@ -448,11 +351,9 @@ async def import_from_file(
     try:
         from agents.skill_store import write_skill
         info = write_skill(name, content, desc)
-        registry_status = _publish_to_registry_optional(info["name"], content, desc)
         return {
             "name": info["name"], "status": "INSTALLED",
             "path": info["path"], "filename": filename, "content_length": info["bytes"],
-            "registry": registry_status,
             "message": f"Skill '{info['name']}' 已导入, agent 下次调用即可自动使用",
         }
     except Exception as e:
@@ -460,82 +361,16 @@ async def import_from_file(
 
 
 # ═══════════════════════════════════════════════════════
-# Update all builtin skills in Registry
+# 重新同步内置 skill 到 EFS (从镜像内置副本)
 # ═══════════════════════════════════════════════════════
 
 @router.post("/update-registry")
-async def update_all_registry_records(current_user: User = Depends(get_current_user)):
-    """读取所有SKILL.md并更新Registry记录"""
-    if not REGISTRY_ID:
-        return {"error": "Registry未配置"}
-
-    base_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "agents", "skills")
-    ctrl = _get_ctrl_client()
-    results = []
-
-    for reg_name in BUILTIN_SKILLS:
-        skill_md_path = os.path.join(base_dir, reg_name, "SKILL.md")
-        if not os.path.exists(skill_md_path):
-            results.append({"name": reg_name, "status": "SKIP", "reason": "No SKILL.md"})
-            continue
-
-        with open(skill_md_path) as f:
-            md_content = f.read()
-
-        desc = BUILTIN_SKILLS[reg_name].get("name", reg_name)[:200]
-
-        try:
-            # Find existing record
-            dp = _get_dp_client()
-            arn = f"arn:aws:bedrock-agentcore:{AWS_REGION}:632930644527:registry/{REGISTRY_ID}"
-            search = dp.search_registry_records(registryIds=[arn], searchQuery=reg_name, maxResults=5)
-            existing = None
-            for rec in search.get("registryRecords", []):
-                if rec.get("name") == reg_name:
-                    existing = rec
-                    break
-
-            if existing and existing.get("recordId"):
-                # Update existing
-                try:
-                    ctrl.update_registry_record(
-                        registryId=REGISTRY_ID, recordId=existing["recordId"],
-                        descriptors={"agentSkills": {"skillMd": {"inlineContent": md_content}}},
-                        recordVersion="5.0.0", description=desc,
-                    )
-                    results.append({"name": reg_name, "status": "UPDATED", "record_id": existing["recordId"]})
-                except Exception:
-                    # If update fails, create new
-                    r = ctrl.create_registry_record(
-                        registryId=REGISTRY_ID, name=reg_name, descriptorType="AGENT_SKILLS",
-                        descriptors={"agentSkills": {"skillMd": {"inlineContent": md_content}}},
-                        recordVersion="5.0.0", description=desc,
-                    )
-                    rid = r["recordArn"].split("/")[-1]
-                    time.sleep(1)
-                    try:
-                        ctrl.submit_registry_record_for_approval(registryId=REGISTRY_ID, recordId=rid)
-                    except Exception:
-                        pass
-                    results.append({"name": reg_name, "status": "CREATED", "record_id": rid})
-            else:
-                # Create new
-                r = ctrl.create_registry_record(
-                    registryId=REGISTRY_ID, name=reg_name, descriptorType="AGENT_SKILLS",
-                    descriptors={"agentSkills": {"skillMd": {"inlineContent": md_content}}},
-                    recordVersion="5.0.0", description=desc,
-                )
-                rid = r["recordArn"].split("/")[-1]
-                time.sleep(1)
-                try:
-                    ctrl.submit_registry_record_for_approval(registryId=REGISTRY_ID, recordId=rid)
-                except Exception:
-                    pass
-                results.append({"name": reg_name, "status": "CREATED", "record_id": rid})
-        except Exception as e:
-            results.append({"name": reg_name, "status": "ERROR", "error": str(e)[:150]})
-
-    return {"results": results, "total": len(results)}
+async def resync_builtin_skills(current_user: User = Depends(get_current_user)):
+    """把镜像内置的 4 个 skill 重新同步到 EFS .claude/skills (缺失才补)。"""
+    from agents.orchestrator_agent import seed_skills_to
+    from agents.skill_store import skills_root, list_skills
+    seed_skills_to(skills_root())
+    return {"results": list_skills(), "source": "efs"}
 
 
 # ═══════════════════════════════════════════════════════
@@ -603,7 +438,6 @@ allowed-tools: tool1 tool2
             info = write_skill(name, content, desc)
             result.update({
                 "name": info["name"], "status": "INSTALLED", "path": info["path"],
-                "registry": _publish_to_registry_optional(info["name"], content, desc),
                 "message": f"Skill '{info['name']}' 已生成并安装, agent 下次调用即可自动使用",
             })
         return result

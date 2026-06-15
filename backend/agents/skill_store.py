@@ -101,6 +101,23 @@ def list_skills() -> list[dict]:
     return out
 
 
+def read_skill(name: str) -> dict | None:
+    """读取单个 skill 的完整 SKILL.md 内容 + 描述。不存在返回 None。"""
+    safe = sanitize_name(name)
+    md = os.path.join(skills_dir(), safe, "SKILL.md")
+    if not os.path.isfile(md):
+        return None
+    with open(md, encoding="utf-8") as f:
+        content = f.read()
+    desc = ""
+    m = re.search(r"^\s*description:\s*(.+)$", content[:2000], re.M)
+    if m:
+        desc = m.group(1).strip().strip('"').strip("'")
+    builtin = {"investment-analysis", "stock-trading", "quant-trading", "market-data"}
+    return {"name": safe, "description": desc[:300], "content": content,
+            "builtin": safe in builtin, "path": md}
+
+
 def delete_skill(name: str) -> bool:
     """删除一个 skill 目录 (内置 skill 不允许删)。"""
     safe = sanitize_name(name)
