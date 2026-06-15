@@ -79,6 +79,43 @@ def write_skill(name: str, content: str, description: str = "") -> dict:
     return {"name": safe, "path": path, "bytes": len(content.encode("utf-8")), "root": skills_root()}
 
 
+def write_skill_bundle(name: str, skill_md: str, files: dict[str, bytes] | None = None,
+                       description: str = "") -> dict:
+    """写入一个完整 skill 包: SKILL.md + 附带文件 (scripts/、references/ 等)。
+
+    files: {相对路径: 字节内容}, 相对路径基于 skill 目录, 如 "scripts/run.py"。
+    返回 {name, path, files: [...], bytes}。
+    """
+    safe = sanitize_name(name)
+    target_dir = os.path.join(skills_dir(), safe)
+    os.makedirs(target_dir, exist_ok=True)
+
+    # SKILL.md (确保 frontmatter)
+    skill_md = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", skill_md or "")
+    skill_md = _ensure_frontmatter(skill_md, safe, description)
+    md_path = os.path.join(target_dir, "SKILL.md")
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(skill_md)
+
+    written = ["SKILL.md"]
+    for rel, data in (files or {}).items():
+        # 防目录穿越; 跳过 SKILL.md (已单独处理)
+        rel_norm = os.path.normpath(rel).lstrip("/")
+        if rel_norm.startswith("..") or os.path.isabs(rel_norm):
+            continue
+        if rel_norm.lower() == "skill.md":
+            continue
+        dest = os.path.join(target_dir, rel_norm)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "wb") as f:
+            f.write(data if isinstance(data, bytes) else str(data).encode("utf-8"))
+        written.append(rel_norm)
+
+    total = sum(os.path.getsize(os.path.join(target_dir, w)) for w in written
+                if os.path.isfile(os.path.join(target_dir, w)))
+    return {"name": safe, "path": md_path, "files": written, "bytes": total}
+
+
 def list_skills() -> list[dict]:
     """列出 `.claude/skills` 下所有 skill (name + description + 是否内置)。"""
     d = skills_dir()

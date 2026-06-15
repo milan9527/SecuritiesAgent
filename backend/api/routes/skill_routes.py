@@ -133,7 +133,34 @@ class ImportGithubRequest(BaseModel):
 
 @router.post("/import-github")
 async def import_from_github(request: ImportGithubRequest, current_user: User = Depends(get_current_user)):
-    """从URL导入Skill到Registry (支持GitHub, LobeHub等)"""
+    """从 URL 导入 Skill: 自动取名 + 分析内容 + 按 Skill 格式落盘 (SKILL.md + scripts 等)。
+
+    - GitHub 仓库/目录/文件: 抓取整个 skill 目录 (SKILL.md + scripts/ + references/ 等)
+    - 普通网页: 提取正文, 用 LLM 生成规范 SKILL.md
+    全部写入 EFS .claude/skills, agent 自动读取。
+    """
+    import asyncio
+    try:
+        from agents.skill_importer import import_from_url
+        info = await asyncio.to_thread(
+            import_from_url, request.url, AWS_REGION, _settings.LLM_MODEL_ID
+        )
+        return {
+            "name": info["name"], "status": "INSTALLED",
+            "path": info["path"], "files": info["files"],
+            "script_count": info.get("script_count", 0),
+            "source": info.get("source", ""),
+            "content_length": info.get("bytes", 0),
+            "message": (f"Skill '{info['name']}' 已导入 "
+                        f"({len(info['files'])} 个文件, 含 {info.get('script_count', 0)} 个脚本/资源), "
+                        f"agent 下次调用即可自动使用"),
+        }
+    except Exception as e:
+        return {"error": f"导入失败: {str(e)[:200]}"}
+
+
+# 旧版纯 markdown 导入逻辑保留 (未使用), 以备回退
+async def _legacy_import_from_github(request: ImportGithubRequest, current_user: User):
     import httpx, re, html as html_lib
 
     url = request.url
@@ -242,120 +269,93 @@ async def import_from_file(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
 ):
-    """从上传文件导入Skill到Registry (支持 .zip, .md, .txt)"""
-    import re, zipfile, io
+    """上传文件导入 Skill。.zip 保留完整目录结构 (SKILL.md + scripts/ 等), .md/.txt 单文件。"""
+    import re, zipfile, io, os as _os
+    from agents.skill_store import write_skill, write_skill_bundle, sanitize_name
 
     filename = file.filename or "unknown"
     file_bytes = await file.read()
 
-    content = ""
-    name = ""
-    desc = ""
+    def _parse_fm(md: str):
+        n = d = ""
+        if md.lstrip().startswith("---"):
+            body = md.lstrip()[3:]
+            end = body.find("---")
+            if end != -1:
+                fm = body[:end]
+                nm = re.search(r"^\s*name:\s*(.+)$", fm, re.M)
+                dm = re.search(r"^\s*description:\s*(.+)$", fm, re.M)
+                if nm: n = nm.group(1).strip().strip('"').strip("'")
+                if dm: d = dm.group(1).strip().strip('"').strip("'")[:300]
+        return n, d
 
-    if filename.endswith(".zip"):
-        # Extract all relevant files from zip and combine into skill content
-        try:
-            with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
-                all_files = zf.namelist()
-                # Categorize files
-                md_files = [f for f in all_files if f.lower().endswith(".md") and not f.startswith("__")]
-                code_files = [f for f in all_files if f.lower().endswith((".py", ".js", ".ts")) and not f.startswith("__")]
-                config_files = [f for f in all_files if f.lower().endswith((".json", ".yaml", ".yml", ".toml")) and not f.startswith("__")]
-                example_files = [f for f in all_files if "example" in f.lower() or "sample" in f.lower() or "demo" in f.lower()]
-                txt_files = [f for f in all_files if f.lower().endswith(".txt") and not f.startswith("__")]
-
-                # Find primary SKILL.md
-                skill_md = next((f for f in md_files if "skill" in f.lower()), None)
-                readme_md = next((f for f in md_files if "readme" in f.lower()), None)
-                primary_md = skill_md or readme_md or (md_files[0] if md_files else None)
-
-                parts = []
-
-                # 1. Primary markdown (SKILL.md or README.md)
-                if primary_md:
-                    parts.append(zf.read(primary_md).decode("utf-8", errors="ignore"))
-
-                # 2. Other markdown files
-                for f in md_files:
-                    if f != primary_md:
-                        file_content = zf.read(f).decode("utf-8", errors="ignore")
-                        parts.append(f"\n\n---\n## {f}\n\n{file_content}")
-
-                # 3. Code examples (py, js, ts)
-                if code_files:
-                    parts.append("\n\n---\n## Code Examples\n")
-                    for f in code_files[:5]:  # Max 5 code files
-                        file_content = zf.read(f).decode("utf-8", errors="ignore")
-                        ext = f.rsplit(".", 1)[-1]
-                        parts.append(f"\n### {f}\n```{ext}\n{file_content[:20000]}\n```\n")
-
-                # 4. Config files
-                if config_files:
-                    parts.append("\n\n---\n## Configuration\n")
-                    for f in config_files[:3]:
-                        file_content = zf.read(f).decode("utf-8", errors="ignore")
-                        ext = f.rsplit(".", 1)[-1]
-                        parts.append(f"\n### {f}\n```{ext}\n{file_content[:20000]}\n```\n")
-
-                # 5. Example/sample files not already included
-                for f in example_files:
-                    if f not in md_files and f not in code_files and f not in config_files:
-                        try:
-                            file_content = zf.read(f).decode("utf-8", errors="ignore")
-                            parts.append(f"\n### {f}\n```\n{file_content[:20000]}\n```\n")
-                        except Exception:
-                            pass
-
-                # 6. If no md found, create from file listing
-                if not primary_md:
-                    file_list = "\n".join(f"- {f}" for f in all_files[:30])
-                    parts.insert(0, f"---\nname: {filename.replace('.zip', '')}\n---\n\n# {filename}\n\nFiles:\n{file_list}\n")
-
-                content = "\n".join(parts)
-        except zipfile.BadZipFile:
-            return {"error": "无效的ZIP文件"}
-
-    elif filename.endswith((".md", ".txt")):
-        content = file_bytes.decode("utf-8", errors="ignore")
-
-    else:
-        return {"error": f"不支持的文件格式: {filename}。支持 .zip, .md, .txt"}
-
-    if not content.strip():
-        return {"error": "文件内容为空"}
-
-    # Parse name and description from content
-    if "---" in content:
-        parts = content.split("---")
-        if len(parts) >= 3:
-            name_match = re.search(r"name:\s*(.+)", parts[1])
-            desc_match = re.search(r"description:\s*(.+)", parts[1])
-            if name_match:
-                name = name_match.group(1).strip().strip('"').strip("'")
-            if desc_match:
-                desc = desc_match.group(1).strip().strip('"').strip("'")[:200]
-
-    if not name:
-        name = filename.rsplit(".", 1)[0].replace("_", "-").replace(" ", "-").lower()
-
-    if not desc:
-        lines = [l.strip() for l in content.split("\n") if l.strip() and not l.startswith(("#", "---", "```"))]
-        desc = (lines[0] if lines else filename)[:200]
-
-    # Sanitize content
-    content = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', content)
-    if len(content.encode('utf-8')) > 60000:
-        content = content[:50000] + f"\n\n[Truncated from {filename}]"
-
-    # 写入 EFS .claude/skills —— agent 自动读取 (无需 Registry)
     try:
-        from agents.skill_store import write_skill
-        info = write_skill(name, content, desc)
-        return {
-            "name": info["name"], "status": "INSTALLED",
-            "path": info["path"], "filename": filename, "content_length": info["bytes"],
-            "message": f"Skill '{info['name']}' 已导入, agent 下次调用即可自动使用",
-        }
+        if filename.endswith(".zip"):
+            with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+                names = [n for n in zf.namelist() if not n.endswith("/") and "__MACOSX" not in n]
+                if not names:
+                    return {"error": "ZIP 为空"}
+                # 去掉公共顶层目录前缀 (如 my-skill/SKILL.md -> SKILL.md)
+                top = ""
+                firsts = {n.split("/")[0] for n in names if "/" in n}
+                if len(firsts) == 1 and all("/" in n for n in names):
+                    top = firsts.pop() + "/"
+
+                files: dict[str, bytes] = {}
+                skill_md = ""
+                ALLOWED = {".md", ".py", ".js", ".ts", ".json", ".yaml", ".yml",
+                           ".toml", ".txt", ".sh", ".sql", ".csv"}
+                for n in names:
+                    rel = n[len(top):] if top and n.startswith(top) else n
+                    if not rel or rel.startswith("."):
+                        continue
+                    ext = _os.path.splitext(rel)[1].lower()
+                    if ext and ext not in ALLOWED:
+                        continue
+                    data = zf.read(n)
+                    if len(data) > 200_000:
+                        continue
+                    if rel.lower() == "skill.md":
+                        skill_md = data.decode("utf-8", "ignore")
+                    else:
+                        files[rel] = data
+
+                # 无 SKILL.md → 用 README 或合成
+                if not skill_md:
+                    readme = next((k for k in files if k.lower() in ("readme.md", "readme.markdown")), None)
+                    if readme:
+                        skill_md = files.pop(readme).decode("utf-8", "ignore")
+                    else:
+                        listing = "\n".join(f"- {k}" for k in list(files)[:30])
+                        skill_md = f"# {sanitize_name(filename[:-4])}\n\n打包导入的 skill。\n\n## 文件\n{listing}\n"
+
+                name, desc = _parse_fm(skill_md)
+                name = name or filename[:-4]
+                info = write_skill_bundle(name, skill_md, files, desc)
+                return {
+                    "name": info["name"], "status": "INSTALLED", "path": info["path"],
+                    "filename": filename, "files": info["files"],
+                    "script_count": len([f for f in info["files"] if f != "SKILL.md"]),
+                    "content_length": info["bytes"],
+                    "message": f"Skill '{info['name']}' 已导入 ({len(info['files'])} 个文件), agent 下次调用即可自动使用",
+                }
+
+        elif filename.endswith((".md", ".txt")):
+            content = file_bytes.decode("utf-8", "ignore")
+            if not content.strip():
+                return {"error": "文件内容为空"}
+            name, desc = _parse_fm(content)
+            name = name or filename.rsplit(".", 1)[0]
+            info = write_skill(name, content, desc)
+            return {
+                "name": info["name"], "status": "INSTALLED", "path": info["path"],
+                "filename": filename, "content_length": info["bytes"],
+                "message": f"Skill '{info['name']}' 已导入, agent 下次调用即可自动使用",
+            }
+        else:
+            return {"error": f"不支持的文件格式: {filename}。支持 .zip, .md, .txt"}
+    except zipfile.BadZipFile:
+        return {"error": "无效的ZIP文件"}
     except Exception as e:
         return {"error": f"导入失败: {str(e)[:200]}"}
 

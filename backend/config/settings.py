@@ -76,6 +76,8 @@ class Settings(BaseSettings):
     AGENTCORE_REGISTRY_ID: str = Field(default="")
     # Skill 根目录: Runtime 上指向 EFS 挂载点 (如 /mnt/skills), 本地留空用镜像内置
     AGENTCORE_SKILLS_ROOT: str = Field(default="")
+    # GitHub token (可选): 导入 GitHub skill 时提高 API 速率上限, 避免大 skill 被截断
+    GITHUB_TOKEN: str = Field(default="")
 
     # ── 通知 ──
     SMTP_HOST: str = Field(default="")
