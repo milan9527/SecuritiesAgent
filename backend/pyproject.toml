@@ -48,3 +48,11 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "network: tests that require outbound internet (deselected by default)",
+]
+addopts = "-m 'not network'"
