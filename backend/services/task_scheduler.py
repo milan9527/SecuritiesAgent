@@ -119,20 +119,35 @@ def _add_job(scheduler: AsyncIOScheduler, task: ScheduledTask):
     print(f"[Scheduler] Added job: {task.name} ({task.cron_expression})")
 
 
+# 锁 TTL 必须覆盖最长一次任务运行时长 (重型 agent 任务可达 ~15 min)。
+# 设 20 min: 运行期间任何重复触发 (EventBridge/Lambda 的 at-least-once 重投递,
+# 或多容器并发) 都拿不到锁而被跳过, 避免重复执行/重复发邮件。
+_TASK_LOCK_TTL = 1200
+
+
+def _task_lock_key(task_id: str) -> str:
+    # 按任务 (不含分钟): 跨分钟的重复触发也能去重。一次运行只发一封邮件。
+    return f"scheduler:lock:{task_id}"
+
+
 async def _acquire_task_lock(task_id: str) -> bool:
-    """Try to acquire a distributed lock via Redis to prevent duplicate execution.
+    """Try to acquire a per-task distributed lock via Redis to prevent duplicate execution.
     Returns True if lock acquired (this instance should execute), False otherwise.
+    锁在执行结束时由 _release_task_lock 释放; 异常未释放时靠 TTL 兜底过期。
     """
     try:
         from db.redis_client import redis_client
-        lock_key = f"scheduler:lock:{task_id}:{datetime.utcnow().strftime('%Y%m%d%H%M')}"
-        # SET NX with 10 min TTL — only one instance wins
-        acquired = await redis_client.set(lock_key, "1", ex=600, nx=True)
+        # SET NX, TTL 覆盖整段运行 — 同一任务运行期间只有一个执行者
+        acquired = await redis_client.set(_task_lock_key(task_id), "1", ex=_TASK_LOCK_TTL, nx=True)
         return bool(acquired)
     except Exception as e:
-        # If Redis is unavailable, allow execution (single instance fallback)
+        # Redis 不可用: 单实例兜底, 允许执行
         print(f"[Scheduler] Redis lock failed ({e}), proceeding anyway")
         return True
+    # 注意: 故意不主动释放锁 —— 让它按 TTL 过期。这样在 TTL 窗口内的任何重复触发
+    # (EventBridge/Lambda at-least-once 重投递、多容器并发) 都会被去重, 一次触发只发一封邮件。
+    # 定时 cron 每天才触发一次 (间隔 24h ≫ 20min), 不会被误挡; 手动"立即运行"走另一条
+    # 内联路径 (/{task_id}/run), 不经此锁, 不受影响。
 
 
 async def _execute_task(task_id: str):
