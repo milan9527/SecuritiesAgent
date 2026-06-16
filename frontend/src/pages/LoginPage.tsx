@@ -11,9 +11,11 @@ export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [loading, setLoading] = useState(false)
   const [mode, setMode] = useState<'login' | 'register'>('login')
+  // 默认按已启用 Cognito 渲染, 消除首屏 config 未返回时的界面闪烁;
+  // /api/auth/config 返回后会以真实值覆盖。
   const [authConfig, setAuthConfig] = useState<{ cognito_enabled: boolean; allow_registration: boolean }>({
-    cognito_enabled: false,
-    allow_registration: false,
+    cognito_enabled: true,
+    allow_registration: true,
   })
   const login = useAuthStore((s) => s.login)
   const navigate = useNavigate()
