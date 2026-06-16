@@ -221,7 +221,9 @@ class BackendStack(Stack):
         )
 
         # Auto-scaling
-        scaling = service.auto_scale_task_count(min_capacity=1, max_capacity=4)
+        # min 2: 重型 agent 任务 (定期任务/长对话) 会长时间占满单个 task,
+        # 保持 ≥2 个 task 才能一边跑重任务一边正常响应 API/健康检查。
+        scaling = service.auto_scale_task_count(min_capacity=2, max_capacity=4)
         scaling.scale_on_cpu_utilization("CpuScaling",
             target_utilization_percent=70,
             scale_in_cooldown=Duration.seconds(60),
