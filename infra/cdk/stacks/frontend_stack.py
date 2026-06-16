@@ -52,6 +52,9 @@ class FrontendStack(Stack):
                     allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
                     cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
                     origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER,
+                    # 关闭压缩: 开启 Compress 会让 CloudFront 缓冲整个响应再压缩,
+                    # 导致 SSE 流式失效 (keepalive ping 不流出 → 60s origin 超时 → 504)。
+                    compress=False,
                 ),
             },
             default_root_object="index.html",
