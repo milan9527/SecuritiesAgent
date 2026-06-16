@@ -163,16 +163,36 @@ async def _execute_task(task_id: str):
             # Build prompt with user context
             prompt = await _build_task_prompt(task, user, db)
 
+            # 长期记忆: 注入该用户与此任务相关的偏好 + 历史情节 (自我迭代/验证历史预测)
+            try:
+                from agents.memory_store import recall_context
+                mem_ctx = await asyncio.to_thread(recall_context, str(user.id), task.prompt)
+                if mem_ctx:
+                    prompt = f"{mem_ctx}\n\n{prompt}"
+            except Exception as e:
+                print(f"[Scheduler] memory recall failed: {e}")
+
+            # 稳定 session_id (按任务), 让历史情节在 Memory 聚合
+            mem_session = f"scheduler-{task_id}"
+
             # Execute agent
             from agents.runtime_client import invoke_runtime_agent
             response = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: invoke_runtime_agent(
                     prompt=prompt,
-                    session_id=f"scheduler-{task_id}-{datetime.utcnow().strftime('%Y%m%d%H%M')}",
+                    session_id=mem_session,
                     user_id=str(user.id),
                 ),
             )
+
+            # 写入 Memory STM (任务+结果 → 提取情节, 供下次验证)
+            try:
+                from agents.memory_store import record_turn
+                await asyncio.to_thread(record_turn, str(user.id), mem_session,
+                                        f"[定期任务:{task.name}] {task.prompt[:1500]}", response)
+            except Exception as e:
+                print(f"[Scheduler] memory record failed: {e}")
 
             # Save result
             await db.execute(

@@ -213,12 +213,25 @@ async def run_task_now(
                                     "批量获取全部自选股的行情/指标 (一次拉完, 不要逐只串行多次调用), "
                                     "再统一分析输出。每只股票结论简明 (1-2 行), 用表格汇总。\n")
 
+        # 长期记忆: 检索该用户与此任务相关的偏好 + 历史情节 (含过往预测及结果),
+        # 注入 prompt → agent 自我迭代 (验证历史预测、保持好的、纠正差的)。
+        try:
+            from agents.memory_store import recall_context
+            mem_ctx = await asyncio.to_thread(recall_context, str(user_id), task.prompt)
+            if mem_ctx:
+                task_prompt = f"{mem_ctx}\n\n{task_prompt}"
+        except Exception as e:
+            print(f"[Scheduler] memory recall failed: {e}")
+
         task_prompt += (
             f"\n重要: 不要使用训练数据中的旧信息, 必须通过工具获取最新实时数据。\n\n"
             f"{task.prompt}"
         )
     except Exception as e:
         print(f"[Scheduler] Failed to build prompt: {e}")
+
+    # 用稳定的 session_id (按任务), 让该任务的历史情节在 Memory 中聚合, 便于自我迭代
+    mem_session = f"scheduler-{task_db_id}"
 
     async def generate():
         yield f"data: {_j.dumps({'type': 'ping', 'elapsed': 0})}\n\n"
@@ -229,7 +242,7 @@ async def run_task_now(
             None,
             lambda: invoke_runtime_agent(
                 prompt=task_prompt,
-                session_id=f"scheduler-{task_db_id}-{uuid.uuid4().hex[:8]}",
+                session_id=mem_session,
                 user_id=str(user_id),
             )
         )
@@ -247,6 +260,15 @@ async def run_task_now(
             response = await future
         except Exception as e:
             response = f"Error: {str(e)[:300]}"
+
+        # 写入 AgentCore Memory STM: 任务请求 + 结果 → 后台提取为情节(预测/交易记录),
+        # 供下次该任务运行时自我验证迭代。
+        try:
+            from agents.memory_store import record_turn
+            await asyncio.to_thread(record_turn, str(user_id), mem_session,
+                                    f"[定期任务:{task_name}] {task_prompt[:1500]}", response)
+        except Exception as e:
+            print(f"[Scheduler] memory record failed: {e}")
 
         # Save result to DB + Document
         try:

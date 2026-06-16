@@ -32,6 +32,7 @@ class BackendStack(Stack):
                  agentcore_runtime_arn: str = "",
                  agentcore_browser_id: str = "",
                  agentcore_ci_id: str = "",
+                 agentcore_memory_id: str = "",
                  **kwargs):
         super().__init__(scope, id, **kwargs)
 
@@ -160,6 +161,7 @@ class BackendStack(Stack):
                 "AGENTCORE_AGENT_ARN": agentcore_runtime_arn,
                 "AGENTCORE_BROWSER_ID": agentcore_browser_id,
                 "AGENTCORE_CODE_INTERPRETER_ID": agentcore_ci_id,
+                "AGENTCORE_MEMORY_ID": agentcore_memory_id,  # 长期记忆 (偏好/摘要/情节)
                 # 共享 skill 目录 (EFS, 与 Runtime 同一 access point): 导入的 skill 落此处, agent 自动读取
                 **({"AGENTCORE_SKILLS_ROOT": skills_mount_path} if skills_enabled else {}),
             },

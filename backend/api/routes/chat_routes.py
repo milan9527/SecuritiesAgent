@@ -1,6 +1,7 @@
 """
 Agent对话路由 - 通过AgentCore Runtime调用Agent
-对话存储在DB + AgentCore Memory (STM + LTM)
+对话存储: 消息存 DB (展示/历史); 多轮上下文记忆由 Claude Agent SDK 原生会话管理
+(transcript 落 EFS 上的 CLAUDE_CONFIG_DIR, 同一 session resume 续接), 未使用 AgentCore Memory。
 """
 from __future__ import annotations
 
@@ -101,7 +102,7 @@ async def chat_with_agent(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """与Agent对话(SSE流式) - 保存到DB + AgentCore Memory"""
+    """与Agent对话(SSE流式) - 消息存DB; 多轮记忆走 SDK EFS 会话 (非 AgentCore Memory)"""
     from fastapi.responses import StreamingResponse
     import json as _json
 
@@ -128,6 +129,16 @@ async def chat_with_agent(
     # 多轮对话记忆由 Claude Agent SDK 原生会话管理处理:
     # orchestrator 把会话 transcript 写到 EFS 上的 CLAUDE_CONFIG_DIR, 同一 session_id
     # 自动 resume 加载历史。这里无需再手动回放历史。
+
+    # 长期记忆 (AgentCore Memory): 检索该用户的偏好 + 相关历史情节, 注入 prompt,
+    # 让 agent 参考长期偏好并对照过往预测/交易做自我迭代。
+    try:
+        from agents.memory_store import recall_context
+        mem_ctx = await asyncio.to_thread(recall_context, str(current_user.id), request.message)
+        if mem_ctx:
+            context_prompt = f"{mem_ctx}\n\n{context_prompt}"
+    except Exception as e:
+        print(f"[Chat] memory recall failed: {e}")
 
     # Agent 始终可见全部 skill (含导入的, 由 orchestrator skills="all" 从 EFS 加载),
     # 不再做 skill 过滤 / Smart Select。
@@ -187,6 +198,14 @@ async def chat_with_agent(
             )
             save_db.add(asst_msg)
             await save_db.commit()
+
+        # 写入 AgentCore Memory STM (后台据此提取偏好/摘要/情节)
+        try:
+            from agents.memory_store import record_turn
+            await asyncio.to_thread(record_turn, str(current_user.id), session_id,
+                                    request.message, response_text)
+        except Exception as e:
+            print(f"[Chat] memory record failed: {e}")
 
         # Send final result
         result = _json.dumps({
