@@ -448,9 +448,15 @@ async def _parse_task_description(description: str) -> dict:
   "schedule_desc": "人类可读的调度描述"
 }}
 
+cron 规则 (务必遵守):
+- 必须是 6 字段 EventBridge 格式: cron(分 时 日 月 星期 年), 用 cron(...) 包裹。
+- 日(第3位)和星期(第5位)其中恰好一个必须是 ?, 不能都是 * 或都具体。指定星期时日用 ?。
+- 星期用英文缩写 SUN/MON/TUE/WED/THU/FRI/SAT 或区间 MON-FRI, 不要用数字。
+- 不要输出 Unix 5 字段 cron (如 0 16 * * 1-5)。
+
 常用cron示例(北京时间):
 - 每个工作日北京时间15:00 = cron(0 15 ? * MON-FRI *)
-- 每天北京时间9:30 = cron(30 9 ? * * *)
+- 每天北京时间9:30 = cron(30 9 * * ? *)
 - 每周一北京时间9:00 = cron(0 9 ? * MON *)
 - 每周五北京时间15:00 = cron(0 15 ? * FRI *)"""
 

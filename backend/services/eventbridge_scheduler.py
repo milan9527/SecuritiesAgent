@@ -54,16 +54,40 @@ def _to_scheduler_expression(cron_expression: str) -> str:
     else:
         inner = expr
     parts = inner.split()
-    # Scheduler 要求 6 字段 (含 year)。补齐缺失字段。
+    # Scheduler 要求 6 字段 (分 时 日 月 周 年)。标准 Unix 5 字段则补 year=*。
     if len(parts) == 5:
         parts.append("*")
     if len(parts) != 6:
         return "cron(30 9 ? * MON-FRI *)"
-    # day-of-month 与 day-of-week 不能同时为 * (cron 限制), 至少一个为 ?
-    dom, dow = parts[2], parts[4]
-    if dom == "*" and dow == "*":
-        parts[2] = "?"
-    return f"cron({' '.join(parts)})"
+
+    minute, hour, dom, month, dow, year = parts
+
+    # EventBridge 用数字星期 1-7 = SUN-SAT; Unix 用 0-7 = SUN..SAT(0/7 都是周日)。
+    # LLM 常返回 Unix 风格 (如 1-5 表示周一到周五)。统一转成 EventBridge 名称, 避免歧义。
+    _UNIX_DOW = {"0": "SUN", "1": "MON", "2": "TUE", "3": "WED", "4": "THU", "5": "FRI", "6": "SAT", "7": "SUN"}
+    def _conv_dow(token: str) -> str:
+        if token in ("*", "?"):
+            return token
+        out = token
+        # 先转区间/列表里的纯数字 (如 1-5 / 1,3,5)
+        for num, name in _UNIX_DOW.items():
+            out = out.replace(num, name)
+        return out
+    # 仅当 dow 含数字时转换 (已是 MON-FRI 之类则原样保留)
+    if any(ch.isdigit() for ch in dow):
+        dow = _conv_dow(dow)
+
+    # EventBridge 限制: day-of-month 与 day-of-week 不能同时具体/同时为 *,
+    # 二者恰好一个为 ?。按"指定了周几就用周几、否则按日"的常识规整。
+    if dow not in ("*", "?"):
+        dom = "?"                      # 指定了星期 → 日设为 ?
+    elif dom not in ("*", "?"):
+        dow = "?"                      # 指定了日 → 星期设为 ?
+    else:
+        # 两者都是 * → 每天: dom=*, dow=?
+        dom, dow = "*", "?"
+
+    return f"cron({minute} {hour} {dom} {month} {dow} {year})"
 
 
 def upsert_schedule(task) -> dict:
