@@ -49,7 +49,12 @@ backend = BackendStack(app, f"{project}-backend", env=env, project=project,
                        agentcore_runtime_arn=app.node.try_get_context("runtime_arn") or "",
                        agentcore_browser_id=app.node.try_get_context("browser_id") or "",
                        agentcore_ci_id=app.node.try_get_context("ci_id") or "",
-                       agentcore_memory_id=app.node.try_get_context("memory_id") or "")
+                       agentcore_memory_id=app.node.try_get_context("memory_id") or "",
+                       scheduler_mode=app.node.try_get_context("scheduler_mode") or "apscheduler",
+                       scheduler_invoke_token=app.node.try_get_context("scheduler_invoke_token") or "",
+                       scheduler_role_arn=app.node.try_get_context("scheduler_role_arn") or "",
+                       scheduler_lambda_arn=app.node.try_get_context("scheduler_lambda_arn") or "",
+                       scheduler_group=app.node.try_get_context("scheduler_group") or "securities-trading-cc")
 
 # Stack 5: S3 + CloudFront (Frontend)
 frontend = FrontendStack(app, f"{project}-frontend", env=env, project=project,

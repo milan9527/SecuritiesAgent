@@ -22,6 +22,27 @@ router = APIRouter(prefix="/api/scheduler", tags=["定期任务"])
 _settings = get_settings()
 
 
+def _sync_schedule(task):
+    """根据 SCHEDULER_MODE 把任务同步到对应调度后端。
+    eventbridge: EventBridge Scheduler (每任务一个 schedule, tz-aware, 启用/禁用);
+    apscheduler: 进程内 (本地/兜底)。"""
+    from services import eventbridge_scheduler as ebs
+    if ebs.enabled():
+        return ebs.upsert_schedule(task)
+    from services.task_scheduler import sync_task
+    sync_task(task)
+    return {"mode": "apscheduler"}
+
+
+def _remove_schedule(task_id: str):
+    from services import eventbridge_scheduler as ebs
+    if ebs.enabled():
+        return ebs.delete_schedule(task_id)
+    from services.task_scheduler import remove_task
+    remove_task(task_id)
+    return {"mode": "apscheduler"}
+
+
 class TaskCreate(BaseModel):
     description: str  # Natural language, e.g. "每个工作日15点分析A股市场"
     prompt: str = ""  # Agent prompt (auto-generated if empty)
@@ -50,9 +71,20 @@ async def list_tasks(
     )
     tasks = result.scalars().all()
 
-    # Get APScheduler job info
-    from services.task_scheduler import get_all_jobs
-    jobs = {j["id"]: j for j in get_all_jobs()}
+    from services import eventbridge_scheduler as ebs
+    eb_mode = ebs.enabled()
+    jobs = {}
+    if not eb_mode:
+        # APScheduler 模式才查进程内 job
+        from services.task_scheduler import get_all_jobs
+        jobs = {j["id"]: j for j in get_all_jobs()}
+
+    def _sched_info(t):
+        if eb_mode:
+            # EventBridge: 调度有效性 = schedule 存在且 is_active (State=ENABLED)
+            return {"next_run_at": "", "scheduler_active": bool(t.is_active and t.aws_rule_arn)}
+        j = jobs.get(f"task-{t.id}", {})
+        return {"next_run_at": j.get("next_run", ""), "scheduler_active": f"task-{t.id}" in jobs}
 
     return {"tasks": [{
         "id": str(t.id), "name": t.name, "description": t.description,
@@ -62,8 +94,7 @@ async def list_tasks(
         "last_run_at": t.last_run_at.isoformat() if t.last_run_at else "",
         "last_result": (t.last_result or "")[:200],
         "created_at": t.created_at.isoformat() if t.created_at else "",
-        "next_run_at": jobs.get(f"task-{t.id}", {}).get("next_run", ""),
-        "scheduler_active": f"task-{t.id}" in jobs,
+        **_sched_info(t),
     } for t in tasks]}
 
 
@@ -92,14 +123,18 @@ async def create_task(
     await db.commit()
     await db.refresh(task)
 
-    # Sync with APScheduler
-    from services.task_scheduler import sync_task
-    sync_task(task)
+    # 同步到调度后端 (EventBridge Scheduler 或 APScheduler)
+    sched = _sync_schedule(task)
+    if isinstance(sched, dict) and sched.get("schedule_arn"):
+        task.aws_rule_name = sched.get("name", "")
+        task.aws_rule_arn = sched["schedule_arn"]
+        await db.commit()
 
     return {
         "id": str(task.id), "name": task.name,
         "cron_expression": task.cron_expression,
         "parsed": parsed,
+        "schedule": sched,
     }
 
 
@@ -126,11 +161,14 @@ async def update_task(
 
     await db.commit()
 
-    # Sync with APScheduler
-    from services.task_scheduler import sync_task
-    sync_task(task)
+    # 同步到调度后端 (含启用/禁用: is_active → schedule State)
+    sched = _sync_schedule(task)
+    if isinstance(sched, dict) and sched.get("schedule_arn"):
+        task.aws_rule_name = sched.get("name", "")
+        task.aws_rule_arn = sched["schedule_arn"]
+        await db.commit()
 
-    return {"success": True, "id": str(task.id)}
+    return {"success": True, "id": str(task.id), "is_active": task.is_active, "schedule": sched}
 
 
 @router.delete("/{task_id}")
@@ -147,9 +185,8 @@ async def delete_task(
     if not task:
         return {"error": "任务不存在"}
 
-    # Remove from APScheduler
-    from services.task_scheduler import remove_task
-    remove_task(str(task.id))
+    # 从调度后端移除 (EventBridge schedule 或 APScheduler job)
+    _remove_schedule(str(task.id))
 
     await db.delete(task)
     await db.commit()
@@ -318,6 +355,35 @@ async def parse_description(
     """预览: 解析自然语言为cron表达式"""
     parsed = await _parse_task_description(description)
     return parsed
+
+
+# ═══════════════════════════════════════════════════════
+# 内部触发端点 (EventBridge Scheduler → Lambda → 此端点)
+# 用共享密钥鉴权, 不走用户登录。立即后台执行任务并即时返回 (Lambda 不等待长任务)。
+# ═══════════════════════════════════════════════════════
+
+class InternalRunRequest(BaseModel):
+    task_id: str
+    token: str = ""
+
+
+@router.post("/internal/run-task")
+async def internal_run_task(request: InternalRunRequest):
+    """由 Lambda (受 EventBridge Scheduler 触发) 调用, 触发一次任务执行。
+    鉴权: 共享密钥 SCHEDULER_INVOKE_TOKEN。执行复用进程内 _execute_task
+    (含 Redis 分布式锁防重复、拉真实数据、跑 agent、记忆、存库、发邮件)。
+    立即返回 202, 真正执行在后台 (asyncio task), 不阻塞 Lambda。"""
+    import asyncio
+    from fastapi.responses import JSONResponse
+
+    expected = _settings.SCHEDULER_INVOKE_TOKEN
+    if not expected or request.token != expected:
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+
+    from services.task_scheduler import _execute_task
+    # 后台执行, 不等待 (任务可能跑数分钟)
+    asyncio.create_task(_execute_task(request.task_id))
+    return JSONResponse(status_code=202, content={"accepted": True, "task_id": request.task_id})
 
 
 # ═══════════════════════════════════════════════════════

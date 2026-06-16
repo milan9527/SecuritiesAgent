@@ -28,15 +28,21 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     await init_db()
-    # Start APScheduler for periodic tasks
-    from services.task_scheduler import start_scheduler, stop_scheduler
-    await start_scheduler()
+    # 定期任务调度: eventbridge 模式由 EventBridge Scheduler + Lambda 触发, 进程内不起 APScheduler;
+    # apscheduler 模式 (本地/兜底) 才启动进程内调度。
+    stop_scheduler = None
+    if settings.SCHEDULER_MODE != "eventbridge":
+        from services.task_scheduler import start_scheduler, stop_scheduler
+        await start_scheduler()
+    else:
+        print("[Scheduler] mode=eventbridge (EventBridge Scheduler + Lambda); in-process APScheduler disabled")
     print(f"🚀 {settings.APP_NAME} v{settings.APP_VERSION} 启动")
     print(f"   环境: {settings.ENV}")
     print(f"   区域: {settings.AWS_REGION}")
     print(f"   LLM: {settings.LLM_MODEL_ID}")
     yield
-    await stop_scheduler()
+    if stop_scheduler is not None:
+        await stop_scheduler()
     print("👋 应用关闭")
 
 

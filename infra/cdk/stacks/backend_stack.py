@@ -33,6 +33,11 @@ class BackendStack(Stack):
                  agentcore_browser_id: str = "",
                  agentcore_ci_id: str = "",
                  agentcore_memory_id: str = "",
+                 scheduler_mode: str = "apscheduler",
+                 scheduler_invoke_token: str = "",
+                 scheduler_role_arn: str = "",
+                 scheduler_lambda_arn: str = "",
+                 scheduler_group: str = "",
                  **kwargs):
         super().__init__(scope, id, **kwargs)
 
@@ -83,10 +88,19 @@ class BackendStack(Stack):
         ))
         # Secrets Manager (Aurora credentials)
         db_cluster.secret.grant_read(task_role)
-        # EventBridge (scheduler rules)
+        # EventBridge (legacy rules) + EventBridge Scheduler (定期任务: 每任务一个 schedule)
         task_role.add_to_policy(iam.PolicyStatement(
-            actions=["events:PutRule", "events:DeleteRule", "events:PutTargets", "events:RemoveTargets"],
+            actions=["events:PutRule", "events:DeleteRule", "events:PutTargets", "events:RemoveTargets",
+                     "scheduler:CreateSchedule", "scheduler:UpdateSchedule", "scheduler:DeleteSchedule",
+                     "scheduler:GetSchedule", "scheduler:ListSchedules",
+                     "scheduler:CreateScheduleGroup", "scheduler:GetScheduleGroup"],
             resources=["*"],
+        ))
+        # 允许把 scheduler-invoke-role 传给 EventBridge Scheduler (创建 schedule 时)
+        task_role.add_to_policy(iam.PolicyStatement(
+            actions=["iam:PassRole"],
+            resources=[f"arn:aws:iam::{self.account}:role/{project}-scheduler-invoke-role"],
+            conditions={"StringEquals": {"iam:PassedToService": "scheduler.amazonaws.com"}},
         ))
         # CloudWatch Logs
         task_role.add_managed_policy(iam.ManagedPolicy.from_aws_managed_policy_name("CloudWatchLogsFullAccess"))
@@ -162,6 +176,12 @@ class BackendStack(Stack):
                 "AGENTCORE_BROWSER_ID": agentcore_browser_id,
                 "AGENTCORE_CODE_INTERPRETER_ID": agentcore_ci_id,
                 "AGENTCORE_MEMORY_ID": agentcore_memory_id,  # 长期记忆 (偏好/摘要/情节)
+                # 定期任务调度 (EventBridge Scheduler + Lambda)
+                "SCHEDULER_MODE": scheduler_mode,
+                "SCHEDULER_INVOKE_TOKEN": scheduler_invoke_token,
+                "SCHEDULER_ROLE_ARN": scheduler_role_arn,
+                "SCHEDULER_LAMBDA_ARN": scheduler_lambda_arn,
+                "SCHEDULER_GROUP": scheduler_group or project,
                 # 共享 skill 目录 (EFS, 与 Runtime 同一 access point): 导入的 skill 落此处, agent 自动读取
                 **({"AGENTCORE_SKILLS_ROOT": skills_mount_path} if skills_enabled else {}),
             },

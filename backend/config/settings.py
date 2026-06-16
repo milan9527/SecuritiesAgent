@@ -110,6 +110,20 @@ class Settings(BaseSettings):
     FEISHU_VERIFICATION_TOKEN: str = Field(default="")
     FEISHU_ENCRYPT_KEY: str = Field(default="")
 
+    # ── 定期任务调度 ──
+    # apscheduler: 进程内调度 (旧, 本地默认); eventbridge: EventBridge Scheduler + Lambda (AWS)
+    SCHEDULER_MODE: str = Field(default="apscheduler")
+    # 公网可达的后端基地址 (Lambda 回调用), 如 http://<alb-dns>。留空则用 ALB DNS。
+    PUBLIC_BASE_URL: str = Field(default="")
+    # 内部触发端点共享密钥 (Lambda → 后端 鉴权)。AWS 上由部署脚本注入。
+    SCHEDULER_INVOKE_TOKEN: str = Field(default="")
+    # EventBridge Scheduler 调用 Lambda 用的角色 ARN
+    SCHEDULER_ROLE_ARN: str = Field(default="")
+    # 被调度的 Lambda 函数 ARN (调度目标)
+    SCHEDULER_LAMBDA_ARN: str = Field(default="")
+    # Schedule group 名称 (隔离本项目的 schedule)
+    SCHEDULER_GROUP: str = Field(default="securities-trading-cc")
+
     # ── Server ──
     HOST: str = Field(default="0.0.0.0")
     PORT: int = Field(default=8000)
