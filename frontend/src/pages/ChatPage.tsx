@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { Send, Bot, User, Sparkles, MessageSquarePlus, History, Clock, ChevronLeft, Trash2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import api from '../services/api'
 import toast from 'react-hot-toast'
 
@@ -295,7 +296,7 @@ export default function ChatPage() {
                     prose-hr:border-surface-border
                     prose-code:text-accent-gold prose-code:bg-surface-hover prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs
                     text-sm">
-                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                   </div>
                 ) : (
                   <p className="text-sm text-gray-200">{msg.content}</p>
