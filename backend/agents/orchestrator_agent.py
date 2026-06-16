@@ -158,17 +158,27 @@ def _agentcore_mcp_server() -> dict | None:
     if not shutil.which("uvx"):
         return None
     region = os.environ.get("AWS_REGION", "us-east-1")
+    env = {
+        "FASTMCP_LOG_LEVEL": "ERROR",
+        "AGENTCORE_ENABLE_TOOLS": "browser,code_interpreter",
+        "AWS_REGION": region,
+        "HOME": os.environ.get("HOME", "/home/appuser"),
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+    }
+    # 官方 MCP server 用 CODE_INTERPRETER_IDENTIFIER / BROWSER_IDENTIFIER 选资源,
+    # 默认是 AWS 共享的 aws.codeinterpreter.v1 / aws.browser.v1 (受限/无公网)。
+    # 显式指向我们的 PUBLIC 自定义资源, 否则会落到默认沙箱、无法访问外网。
+    ci_id = os.environ.get("AGENTCORE_CODE_INTERPRETER_ID", "").strip()
+    br_id = os.environ.get("AGENTCORE_BROWSER_ID", "").strip()
+    if ci_id:
+        env["CODE_INTERPRETER_IDENTIFIER"] = ci_id
+    if br_id:
+        env["BROWSER_IDENTIFIER"] = br_id
     return {
         "type": "stdio",
         "command": "uvx",
         "args": ["awslabs.amazon-bedrock-agentcore-mcp-server@latest"],
-        "env": {
-            "FASTMCP_LOG_LEVEL": "ERROR",
-            "AGENTCORE_ENABLE_TOOLS": "browser,code_interpreter",
-            "AWS_REGION": region,
-            "HOME": os.environ.get("HOME", "/home/appuser"),
-            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        },
+        "env": env,
     }
 
 
