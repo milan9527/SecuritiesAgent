@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.database import get_db
 from db.models import User, ScheduledTask
 from api.auth import get_current_user
+from api.internal_auth import resolve_internal_actor
 from config.settings import get_settings
 
 router = APIRouter(prefix="/api/scheduler", tags=["定期任务"])
@@ -384,6 +385,45 @@ async def internal_run_task(request: InternalRunRequest):
     # 后台执行, 不等待 (任务可能跑数分钟)
     asyncio.create_task(_execute_task(request.task_id))
     return JSONResponse(status_code=202, content={"accepted": True, "task_id": request.task_id})
+
+
+class _InternalCreateTask(BaseModel):
+    token: str = ""
+    actor_id: str = ""
+    description: str            # 自然语言描述 (用于解析名称/cron/prompt)
+    prompt: str = ""            # 指定 agent 提示词 (留空则用描述解析出的)
+    cron_expression: str = ""   # 指定 cron (留空则从描述解析)
+    notification_email: str = ""
+    agent_type: str = "orchestrator"
+
+
+@router.post("/internal/create-task")
+async def internal_create_task(req: _InternalCreateTask, db: AsyncSession = Depends(get_db)):
+    """Agent 调用: 为用户创建一个定期任务 (写入【定期任务】模块并挂到 EventBridge Scheduler)。
+    用户说'每天/每周定时帮我做X'时, agent 调用此工具落库 + 注册调度。"""
+    user = await resolve_internal_actor(req.token, req.actor_id, db)
+    parsed = await _parse_task_description(req.description)
+    task = ScheduledTask(
+        user_id=user.id,
+        name=parsed.get("name", req.description[:50]),
+        description=req.description,
+        prompt=req.prompt or parsed.get("prompt", req.description),
+        cron_expression=req.cron_expression or parsed.get("cron", "cron(0 7 ? * MON-FRI *)"),
+        timezone="Asia/Shanghai",
+        agent_type=req.agent_type or "orchestrator",
+        notification_email=req.notification_email or user.email or "",
+        is_active=True,
+    )
+    db.add(task)
+    await db.commit()
+    await db.refresh(task)
+    sched = _sync_schedule(task)
+    if isinstance(sched, dict) and sched.get("schedule_arn"):
+        task.aws_rule_name = sched.get("name", "")
+        task.aws_rule_arn = sched["schedule_arn"]
+        await db.commit()
+    return {"id": str(task.id), "name": task.name, "cron_expression": task.cron_expression,
+            "status": "created", "module": "scheduler", "schedule": sched}
 
 
 # ═══════════════════════════════════════════════════════

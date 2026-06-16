@@ -65,6 +65,11 @@ INVESTMENT_ANALYST_PROMPT = """你是一位资深证券投资分析师, 拥有CF
 ## 输出
 - Markdown, 不用 emoji, 专业严谨; 关键结论加粗, 风险用 > 引用块
 - 报告末尾附免责声明
+
+## 产出物入库 (硬性)
+- 撰写出分析报告/研究 → 调用 save_analysis_report 存入【分析报告】模块 (传 title/content/summary/stock_codes)。
+- 报告里推荐了值得关注的个股 → 对每只调用 add_to_watchlist 加入【自选股池】(带理由)。
+- 入库后在回复里说明已保存到哪个模块。
 """
 
 STOCK_TRADER_PROMPT = """你是一位专业的股票交易Agent, 负责制定和执行交易策略。
@@ -89,7 +94,9 @@ STOCK_TRADER_PROMPT = """你是一位专业的股票交易Agent, 负责制定和
 ## 产出物入库 (硬性)
 - 设计出交易策略 → 调用 save_trading_strategy 保存到【交易策略】模块。
 - 选出值得买入/关注的个股 → 对每只调用 add_to_watchlist 加入用户【自选股池】(带理由/目标价/止损)。
-- 入库后在回复里说明已保存到哪个模块。
+- 用户要求模拟买卖, 或你给出明确买卖决策要落到模拟盘 → 调用 place_simulated_order
+  (side=buy/sell, quantity 为100整数倍, 带 signal_reason) 在【模拟盘】真实下单。
+- 入库后在回复里说明已保存/已下单到哪个模块。
 
 ## 输出
 - 结果用 Markdown 表格: 代码 | 名称 | 当前价 | 信号 | 关键指标 | 理由

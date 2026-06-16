@@ -327,6 +327,66 @@ async def add_to_watchlist(args: dict[str, Any]) -> dict[str, Any]:
     })
 
 
+@tool("save_analysis_report",
+      "把生成的投资分析报告保存到用户的【分析报告】模块。当你产出了一份股票/行业/市场分析报告时, 调用此工具持久化, 用户可在分析报告页查看。",
+      {"title": str, "content": str, "summary": str, "report_type": str,
+       "stock_codes": list, "recommendations": list, "data_sources": list})
+async def save_analysis_report(args: dict[str, Any]) -> dict[str, Any]:
+    return await _run(_persist, path="/api/analysis/internal/save-report", payload={
+        "title": args["title"],
+        "content": args["content"],
+        "summary": args.get("summary", ""),
+        "report_type": args.get("report_type", "agent"),
+        "stock_codes": args.get("stock_codes", []),
+        "recommendations": args.get("recommendations", []),
+        "data_sources": args.get("data_sources", []),
+    })
+
+
+@tool("save_document",
+      "把生成的文档/研报保存到用户的【文档知识库】(默认入库做语义检索)。当你产出值得长期留存、供日后检索的长文/研报/纪要时调用。",
+      {"title": str, "content": str, "category": str, "tags": list,
+       "file_type": str, "add_to_kb": bool})
+async def save_document(args: dict[str, Any]) -> dict[str, Any]:
+    return await _run(_persist, path="/api/documents/internal/save", payload={
+        "title": args["title"],
+        "content": args["content"],
+        "category": args.get("category", "general"),
+        "tags": args.get("tags", []),
+        "file_type": args.get("file_type", "md"),
+        "add_to_kb": args.get("add_to_kb", True),
+    })
+
+
+@tool("create_scheduled_task",
+      "为用户创建一个定期任务(写入【定期任务】模块并注册定时调度)。当用户要求'每天/每周/定时'自动做某事时调用。description 用自然语言描述(含时间), 系统会自动解析出 cron。",
+      {"description": str, "prompt": str, "cron_expression": str,
+       "notification_email": str, "agent_type": str})
+async def create_scheduled_task(args: dict[str, Any]) -> dict[str, Any]:
+    return await _run(_persist, path="/api/scheduler/internal/create-task", payload={
+        "description": args["description"],
+        "prompt": args.get("prompt", ""),
+        "cron_expression": args.get("cron_expression", ""),
+        "notification_email": args.get("notification_email", ""),
+        "agent_type": args.get("agent_type", "orchestrator"),
+    })
+
+
+@tool("place_simulated_order",
+      "在用户的【模拟盘】真实执行一笔买入/卖出(更新资金/持仓/订单记录)。当用户让你模拟买卖、或策略产生明确买卖决策并要落到模拟盘时调用。side 为 buy 或 sell, quantity 必须是100整数倍。",
+      {"side": str, "stock_code": str, "stock_name": str, "price": float,
+       "quantity": int, "signal_reason": str})
+async def place_simulated_order(args: dict[str, Any]) -> dict[str, Any]:
+    return await _run(_persist, path="/api/portfolio/internal/order", payload={
+        "side": args["side"],
+        "stock_code": args["stock_code"],
+        "stock_name": args.get("stock_name", ""),
+        "price": args["price"],
+        "quantity": args["quantity"],
+        "signal_reason": args.get("signal_reason", ""),
+    })
+
+
 # ═══════════════════════════════════════════════════════
 # In-process MCP Server: 所有证券工具
 # ═══════════════════════════════════════════════════════
@@ -347,6 +407,7 @@ ALL_TOOLS = [
     send_trading_signal_notification, format_daily_report,
     # persistence (写入业务模块)
     save_trading_strategy, save_quant_strategy, add_to_watchlist,
+    save_analysis_report, save_document, create_scheduled_task, place_simulated_order,
 ]
 
 SERVER_NAME = "securities"
@@ -377,7 +438,10 @@ TOOL_GROUPS: dict[str, list[str]] = {
                  "evaluate_strategy_conditions"]],
     "quant": [tool_name(n) for n in ["run_backtest", "list_quant_templates", "calculate_performance_metrics"]],
     "notification": [tool_name(n) for n in ["send_trading_signal_notification", "format_daily_report"]],
-    "persistence": [tool_name(n) for n in ["save_trading_strategy", "save_quant_strategy", "add_to_watchlist"]],
+    "persistence": [tool_name(n) for n in
+                    ["save_trading_strategy", "save_quant_strategy", "add_to_watchlist",
+                     "save_analysis_report", "save_document", "create_scheduled_task",
+                     "place_simulated_order"]],
 }
 
 

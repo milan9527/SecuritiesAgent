@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.database import get_db
 from db.models import User, InvestmentReport
 from api.auth import get_current_user
+from api.internal_auth import resolve_internal_actor
 from agents.skills.market_data_skill import get_stock_realtime_quote
 from agents.skills.analysis_skill import analyze_technical_indicators, generate_investment_report
 from agents.skills.web_fetch_skill import web_search, search_financial_news
@@ -385,3 +386,36 @@ async def get_financial_news(
 ):
     results = search_financial_news(request.query)
     return {"results": results}
+
+
+# ── 内部端点: Agent (Runtime) 把生成的分析报告存入【分析报告】模块 (token 鉴权) ──
+class _InternalSaveReport(BaseModel):
+    token: str = ""
+    actor_id: str = ""
+    title: str
+    content: str
+    summary: str = ""
+    report_type: str = "agent"   # comprehensive/stock/sector/market/agent
+    stock_codes: list = []
+    recommendations: list = []
+    data_sources: list = []
+
+
+@router.post("/internal/save-report")
+async def internal_save_report(req: _InternalSaveReport, db: AsyncSession = Depends(get_db)):
+    """Agent 调用: 把生成的投资分析报告保存到该用户的【分析报告】模块。"""
+    user = await resolve_internal_actor(req.token, req.actor_id, db)
+    rpt = InvestmentReport(
+        user_id=user.id,
+        title=req.title[:200],
+        report_type=req.report_type or "agent",
+        content=req.content,
+        summary=(req.summary or req.content[:200]),
+        stock_codes=req.stock_codes or [],
+        recommendations=req.recommendations or [],
+        data_sources=req.data_sources or [],
+    )
+    db.add(rpt)
+    await db.commit()
+    await db.refresh(rpt)
+    return {"id": str(rpt.id), "title": rpt.title, "status": "created", "module": "analysis"}

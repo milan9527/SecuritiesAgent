@@ -6,12 +6,84 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel
 from db.database import get_db
 from db.models import User, Portfolio, Position, Order, OrderSide, OrderStatus
 from api.auth import get_current_user
+from api.internal_auth import resolve_internal_actor
 from api.schemas import OrderCreate, PortfolioResponse
 
 router = APIRouter(prefix="/api/portfolio", tags=["模拟盘"])
+
+
+async def _execute_order(
+    portfolio: Portfolio, side: str, stock_code: str, stock_name: str,
+    price: float, quantity: int, db: AsyncSession,
+    strategy_id=None, signal_reason: str = "",
+) -> dict:
+    """模拟盘下单核心逻辑 (买/卖): 校验 → 调整资金/持仓 → 落订单 → 重算组合总值。
+    供用户端点与 Agent 内部端点共用。校验失败抛 HTTPException。"""
+    if quantity <= 0 or quantity % 100 != 0:
+        raise HTTPException(status_code=400, detail="委托数量必须是100的整数倍")
+    total_amount = price * quantity
+
+    if side == "buy":
+        commission = max(total_amount * 0.0003, 5)
+        total_cost = total_amount + commission
+        if total_cost > portfolio.available_cash:
+            raise HTTPException(status_code=400, detail="可用资金不足")
+        portfolio.available_cash -= total_cost
+        pos_result = await db.execute(
+            select(Position).where(Position.portfolio_id == portfolio.id, Position.stock_code == stock_code)
+        )
+        position = pos_result.scalar_one_or_none()
+        if position:
+            total_cost_old = position.avg_cost * position.quantity
+            position.quantity += quantity
+            position.avg_cost = (total_cost_old + total_amount) / position.quantity
+        else:
+            position = Position(
+                portfolio_id=portfolio.id, stock_code=stock_code, stock_name=stock_name,
+                quantity=quantity, avg_cost=price, current_price=price, market_value=total_amount,
+            )
+            db.add(position)
+    elif side == "sell":
+        pos_result = await db.execute(
+            select(Position).where(Position.portfolio_id == portfolio.id, Position.stock_code == stock_code)
+        )
+        position = pos_result.scalar_one_or_none()
+        if not position or position.quantity < quantity:
+            raise HTTPException(status_code=400, detail="持仓不足")
+        commission = max(total_amount * 0.0003, 5)
+        stamp_tax = total_amount * 0.001
+        portfolio.available_cash += total_amount - commission - stamp_tax
+        position.quantity -= quantity
+        if position.quantity == 0:
+            await db.delete(position)
+    else:
+        raise HTTPException(status_code=400, detail="无效的交易方向")
+
+    new_order = Order(
+        portfolio_id=portfolio.id, stock_code=stock_code, stock_name=stock_name,
+        side=OrderSide(side), price=price, quantity=quantity,
+        filled_quantity=quantity, filled_price=price, status=OrderStatus.FILLED,
+        strategy_id=strategy_id, signal_reason=signal_reason or "",
+    )
+    db.add(new_order)
+
+    # 重算组合总值
+    pos_result = await db.execute(select(Position).where(Position.portfolio_id == portfolio.id))
+    all_positions = pos_result.scalars().all()
+    total_market_value = sum(p.quantity * p.current_price for p in all_positions)
+    portfolio.total_value = portfolio.available_cash + total_market_value
+    portfolio.total_profit = portfolio.total_value - portfolio.initial_capital
+    portfolio.total_profit_pct = (portfolio.total_profit / portfolio.initial_capital * 100) if portfolio.initial_capital else 0.0
+
+    await db.commit()
+    return {
+        "order_id": str(new_order.id), "status": "filled",
+        "message": f"{'买入' if side == 'buy' else '卖出'} {stock_name or stock_code} {quantity}股 成交价{price}",
+    }
 
 
 @router.get("/", response_model=list[PortfolioResponse])
@@ -75,6 +147,45 @@ async def get_portfolios(
     return responses
 
 
+# ── 内部端点: Agent (Runtime) 在用户模拟盘下单 (token 鉴权) ──
+# 注意: 必须定义在 /{portfolio_id}/order 之前, 否则 "internal" 会被当成 portfolio_id。
+class _InternalOrder(BaseModel):
+    token: str = ""
+    actor_id: str = ""
+    side: str            # buy / sell
+    stock_code: str
+    stock_name: str = ""
+    price: float
+    quantity: int
+    signal_reason: str = ""
+
+
+@router.post("/internal/order")
+async def internal_place_order(req: _InternalOrder, db: AsyncSession = Depends(get_db)):
+    """Agent 调用: 在该用户的默认模拟盘执行一笔买/卖 (真实更新资金/持仓/订单)。"""
+    user = await resolve_internal_actor(req.token, req.actor_id, db)
+    res = await db.execute(
+        select(Portfolio).where(Portfolio.user_id == user.id, Portfolio.is_active == True).limit(1)
+    )
+    portfolio = res.scalar_one_or_none()
+    if not portfolio:
+        res2 = await db.execute(select(Portfolio).where(Portfolio.user_id == user.id).limit(1))
+        portfolio = res2.scalar_one_or_none()
+    if not portfolio:
+        portfolio = Portfolio(user_id=user.id, name="模拟盘", initial_capital=1000000.0,
+                              available_cash=1000000.0, total_value=1000000.0, is_active=True)
+        db.add(portfolio)
+        await db.commit()
+        await db.refresh(portfolio)
+    result = await _execute_order(
+        portfolio, req.side, req.stock_code, req.stock_name,
+        req.price, req.quantity, db, signal_reason=req.signal_reason,
+    )
+    result["module"] = "portfolio"
+    result["portfolio"] = portfolio.name
+    return result
+
+
 @router.post("/{portfolio_id}/order")
 async def create_order(
     portfolio_id: str,
@@ -94,95 +205,7 @@ async def create_order(
     if not portfolio:
         raise HTTPException(status_code=404, detail="投资组合不存在")
 
-    # 验证订单
-    if order.quantity <= 0 or order.quantity % 100 != 0:
-        raise HTTPException(status_code=400, detail="委托数量必须是100的整数倍")
-
-    total_amount = order.price * order.quantity
-
-    if order.side == "buy":
-        commission = max(total_amount * 0.0003, 5)
-        total_cost = total_amount + commission
-        if total_cost > portfolio.available_cash:
-            raise HTTPException(status_code=400, detail="可用资金不足")
-
-        # 扣减资金
-        portfolio.available_cash -= total_cost
-
-        # 更新持仓
-        pos_result = await db.execute(
-            select(Position).where(
-                Position.portfolio_id == portfolio.id,
-                Position.stock_code == order.stock_code,
-            )
-        )
-        position = pos_result.scalar_one_or_none()
-        if position:
-            total_cost_old = position.avg_cost * position.quantity
-            position.quantity += order.quantity
-            position.avg_cost = (total_cost_old + total_amount) / position.quantity
-        else:
-            position = Position(
-                portfolio_id=portfolio.id,
-                stock_code=order.stock_code,
-                stock_name=order.stock_name,
-                quantity=order.quantity,
-                avg_cost=order.price,
-                current_price=order.price,
-                market_value=total_amount,
-            )
-            db.add(position)
-
-    elif order.side == "sell":
-        pos_result = await db.execute(
-            select(Position).where(
-                Position.portfolio_id == portfolio.id,
-                Position.stock_code == order.stock_code,
-            )
-        )
-        position = pos_result.scalar_one_or_none()
-        if not position or position.quantity < order.quantity:
-            raise HTTPException(status_code=400, detail="持仓不足")
-
-        commission = max(total_amount * 0.0003, 5)
-        stamp_tax = total_amount * 0.001
-        net_revenue = total_amount - commission - stamp_tax
-
-        portfolio.available_cash += net_revenue
-        position.quantity -= order.quantity
-        if position.quantity == 0:
-            await db.delete(position)
-    else:
-        raise HTTPException(status_code=400, detail="无效的交易方向")
-
-    # 创建订单记录
-    new_order = Order(
-        portfolio_id=portfolio.id,
-        stock_code=order.stock_code,
-        stock_name=order.stock_name,
-        side=OrderSide(order.side),
-        price=order.price,
-        quantity=order.quantity,
-        filled_quantity=order.quantity,
-        filled_price=order.price,
-        status=OrderStatus.FILLED,
+    return await _execute_order(
+        portfolio, order.side, order.stock_code, order.stock_name,
+        order.price, order.quantity, db,
     )
-    db.add(new_order)
-
-    # 更新组合总值
-    pos_result = await db.execute(
-        select(Position).where(Position.portfolio_id == portfolio.id)
-    )
-    all_positions = pos_result.scalars().all()
-    total_market_value = sum(p.quantity * p.current_price for p in all_positions)
-    portfolio.total_value = portfolio.available_cash + total_market_value
-    portfolio.total_profit = portfolio.total_value - portfolio.initial_capital
-    portfolio.total_profit_pct = portfolio.total_profit / portfolio.initial_capital * 100
-
-    await db.commit()
-
-    return {
-        "order_id": str(new_order.id),
-        "status": "filled",
-        "message": f"{'买入' if order.side == 'buy' else '卖出'} {order.stock_name} {order.quantity}股 成交价{order.price}",
-    }

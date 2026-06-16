@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.database import get_db
 from db.models import User, Document, KnowledgeChunk
 from api.auth import get_current_user
+from api.internal_auth import resolve_internal_actor
 from config.settings import get_settings
 
 router = APIRouter(prefix="/api/documents", tags=["文档管理"])
@@ -116,6 +117,47 @@ async def create_document(
         await _add_to_knowledge_base(db, doc, current_user.id)
 
     return {"id": str(doc.id), "title": doc.title, "category": doc.category}
+
+
+# ── 内部端点: Agent (Runtime) 把生成的文档存入【文档知识库】(token 鉴权) ──
+class _InternalSaveDoc(BaseModel):
+    token: str = ""
+    actor_id: str = ""
+    title: str
+    content: str
+    category: str = "general"
+    tags: list = []
+    file_type: str = "md"
+    add_to_kb: bool = True
+
+
+@router.post("/internal/save")
+async def internal_save_document(req: _InternalSaveDoc, db: AsyncSession = Depends(get_db)):
+    """Agent 调用: 把生成的文档/研报保存到该用户的【文档知识库】, 可选入库做语义检索。"""
+    user = await resolve_internal_actor(req.token, req.actor_id, db)
+    doc = Document(
+        user_id=user.id,
+        title=req.title[:300],
+        category=req.category or "general",
+        content=req.content,
+        file_type=req.file_type or "md",
+        file_size=len(req.content.encode("utf-8")),
+        tags=req.tags or [],
+        source="agent",
+        session_id=f"doc-{user.id}-{uuid.uuid4().hex[:8]}",
+    )
+    db.add(doc)
+    await db.commit()
+    await db.refresh(doc)
+    kb = False
+    if req.add_to_kb and req.content:
+        try:
+            await _add_to_knowledge_base(db, doc, user.id)
+            kb = True
+        except Exception as e:  # noqa: BLE001
+            print(f"[documents] internal add_to_kb failed: {e}")
+    return {"id": str(doc.id), "title": doc.title, "status": "created",
+            "module": "documents", "in_knowledge_base": kb}
 
 
 @router.get("/{doc_id}")
