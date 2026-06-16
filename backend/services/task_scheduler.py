@@ -246,7 +246,9 @@ async def _build_task_prompt(task: ScheduledTask, user: User, db) -> str:
             items = items_result.scalars().all()
             if items:
                 stock_list = ", ".join([f"{i.stock_name}({i.stock_code})" for i in items])
-                parts.append(f"[自选股池: {stock_list}]")
+                parts.append(f"[自选股池 (共{len(items)}只, 必须全部覆盖): {stock_list}]")
+                parts.append("严格要求: 涉及'自选股'的任务, 只能分析上面这个自选股池里的真实股票, "
+                             "必须逐一覆盖全部, 不得用茅台/宁德等默认或'知名'股票替代, 不得遗漏或自行增减。")
     except Exception:
         pass
 

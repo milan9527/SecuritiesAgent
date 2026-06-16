@@ -206,7 +206,9 @@ async def run_task_now(
                 items = items_result.scalars().all()
                 if items:
                     stock_list_str = ", ".join([f"{i.stock_name}({i.stock_code})" for i in items])
-                    task_prompt += f"[自选股池: {stock_list_str}]\n"
+                    task_prompt += f"[自选股池 (共{len(items)}只, 必须全部覆盖): {stock_list_str}]\n"
+                    task_prompt += ("严格要求: 涉及'自选股'的任务, 只能分析上面这个自选股池里的真实股票, "
+                                    "必须逐一覆盖全部, 不得用茅台/宁德等默认或'知名'股票替代, 不得遗漏或自行增减。\n")
 
         task_prompt += (
             f"\n重要: 不要使用训练数据中的旧信息, 必须通过工具获取最新实时数据。\n\n"
