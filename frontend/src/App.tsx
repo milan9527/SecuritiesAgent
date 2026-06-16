@@ -12,7 +12,6 @@ import ChatPage from './pages/ChatPage'
 import SkillsPage from './pages/SkillsPage'
 import AnalysisPage from './pages/AnalysisPage'
 import SettingsPage from './pages/SettingsPage'
-import ScanningPage from './pages/ScanningPage'
 import DocumentsPage from './pages/DocumentsPage'
 import SchedulerPage from './pages/SchedulerPage'
 
@@ -47,7 +46,6 @@ export default function App() {
                   <Route path="/quant" element={<QuantPage />} />
                   <Route path="/chat" element={<ChatPage />} />
                   <Route path="/skills" element={<SkillsPage />} />
-                  <Route path="/scanning" element={<ScanningPage />} />
                   <Route path="/documents" element={<DocumentsPage />} />
                   <Route path="/scheduler" element={<SchedulerPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
