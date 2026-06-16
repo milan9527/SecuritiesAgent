@@ -13,11 +13,17 @@ Claude Agent SDK 工具层 - SDK Tools
 """
 from __future__ import annotations
 
+import os
 import json
 import asyncio
+import contextvars
 from typing import Any, Callable
 
 from claude_agent_sdk import tool, create_sdk_mcp_server
+
+# 当前 agent 运行所属用户 (actor_id), 在 run_orchestrator_* 入口处设置。
+# 持久化类工具据此把产出物 (策略/自选股) 写到正确用户名下。
+current_actor: contextvars.ContextVar[str] = contextvars.ContextVar("current_actor", default="")
 
 from agents.skills.market_data_skill import (
     get_stock_realtime_quote as _get_stock_realtime_quote,
@@ -242,6 +248,86 @@ async def format_daily_report(args: dict[str, Any]) -> dict[str, Any]:
 
 
 # ═══════════════════════════════════════════════════════
+# 持久化工具 (persistence): 把 Agent 生成的策略/选股写入对应业务模块。
+# Agent 跑在 Runtime (无 DB 凭据), 故经受 token 保护的后端内部端点完成 DB 写入,
+# 由后端在正确的 user_id 名下落库。actor_id 来自 current_actor ContextVar。
+# ═══════════════════════════════════════════════════════
+def _persist(path: str, payload: dict) -> dict:
+    """同步 POST 后端内部持久化端点 (带共享 token + actor_id)。"""
+    import urllib.request
+    import urllib.error
+
+    base = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    token = os.environ.get("SCHEDULER_INVOKE_TOKEN", "").strip()
+    actor = current_actor.get("")
+    if not base:
+        return {"error": "PUBLIC_BASE_URL 未配置, 无法持久化"}
+    if not actor:
+        return {"error": "缺少用户标识 (actor), 无法持久化"}
+    body = dict(payload)
+    body["token"] = token
+    body["actor_id"] = actor
+    req = urllib.request.Request(
+        f"{base}{path}", data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8")[:300] if hasattr(e, "read") else str(e)
+        return {"error": f"HTTP {e.code}: {detail}"}
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)[:300]}
+
+
+@tool("save_trading_strategy",
+      "把生成的交易策略保存到用户的【交易策略】模块。当你为用户设计/生成了一个交易策略(技术面买卖规则)时, 调用此工具持久化, 之后用户可在交易策略页查看。",
+      {"name": str, "description": str, "strategy_type": str, "parameters": dict,
+       "indicators": list, "buy_conditions": list, "sell_conditions": list, "risk_rules": dict})
+async def save_trading_strategy(args: dict[str, Any]) -> dict[str, Any]:
+    return await _run(_persist, path="/api/strategy/internal/save-trading", payload={
+        "name": args["name"],
+        "description": args.get("description", ""),
+        "strategy_type": args.get("strategy_type", "technical"),
+        "parameters": args.get("parameters", {}),
+        "indicators": args.get("indicators", []),
+        "buy_conditions": args.get("buy_conditions", []),
+        "sell_conditions": args.get("sell_conditions", []),
+        "risk_rules": args.get("risk_rules", {}),
+    })
+
+
+@tool("save_quant_strategy",
+      "把生成的量化策略(含可运行代码)保存到用户的【量化交易】模块。当你为用户编写了量化策略代码时, 调用此工具持久化。",
+      {"name": str, "description": str, "template_name": str, "code": str,
+       "parameters": dict, "performance_metrics": dict})
+async def save_quant_strategy(args: dict[str, Any]) -> dict[str, Any]:
+    return await _run(_persist, path="/api/strategy/internal/save-quant", payload={
+        "name": args["name"],
+        "description": args.get("description", ""),
+        "template_name": args.get("template_name", ""),
+        "code": args.get("code", ""),
+        "parameters": args.get("parameters", {}),
+        "performance_metrics": args.get("performance_metrics", {}),
+    })
+
+
+@tool("add_to_watchlist",
+      "把一只股票加入用户的【自选股池】(默认股票池)。当你为用户选股/推荐了值得关注的股票时, 调用此工具把它加入自选股, 附上理由/目标价/止损价。",
+      {"stock_code": str, "stock_name": str, "added_reason": str,
+       "target_price": float, "stop_loss_price": float})
+async def add_to_watchlist(args: dict[str, Any]) -> dict[str, Any]:
+    return await _run(_persist, path="/api/watchlist/internal/add", payload={
+        "stock_code": args["stock_code"],
+        "stock_name": args.get("stock_name", ""),
+        "added_reason": args.get("added_reason", ""),
+        "target_price": args.get("target_price"),
+        "stop_loss_price": args.get("stop_loss_price"),
+    })
+
+
+# ═══════════════════════════════════════════════════════
 # In-process MCP Server: 所有证券工具
 # ═══════════════════════════════════════════════════════
 ALL_TOOLS = [
@@ -259,6 +345,8 @@ ALL_TOOLS = [
     run_backtest, list_quant_templates, calculate_performance_metrics,
     # notification
     send_trading_signal_notification, format_daily_report,
+    # persistence (写入业务模块)
+    save_trading_strategy, save_quant_strategy, add_to_watchlist,
 ]
 
 SERVER_NAME = "securities"
@@ -289,6 +377,7 @@ TOOL_GROUPS: dict[str, list[str]] = {
                  "evaluate_strategy_conditions"]],
     "quant": [tool_name(n) for n in ["run_backtest", "list_quant_templates", "calculate_performance_metrics"]],
     "notification": [tool_name(n) for n in ["send_trading_signal_notification", "format_daily_report"]],
+    "persistence": [tool_name(n) for n in ["save_trading_strategy", "save_quant_strategy", "add_to_watchlist"]],
 }
 
 

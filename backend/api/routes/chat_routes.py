@@ -76,27 +76,47 @@ async def get_chat_sessions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取用户的所有会话列表"""
-    from sqlalchemy import func, distinct
-    result = await db.execute(
+    """获取用户的所有会话列表。
+    标题(preview)取该会话**最早**的一条用户消息 (第一个问题), 而非字典序最小或最后一条。
+    """
+    from sqlalchemy import func
+
+    # 1) 每个会话的统计: 消息数 + 最后时间 (用于排序)
+    agg_result = await db.execute(
         select(
             ChatMessage.session_id,
             func.count(ChatMessage.id).label("count"),
             func.max(ChatMessage.created_at).label("last_at"),
-            func.min(ChatMessage.content).label("first_msg"),
         )
         .where(ChatMessage.user_id == current_user.id, ChatMessage.role == "user")
         .group_by(ChatMessage.session_id)
         .order_by(func.max(ChatMessage.created_at).desc())
         .limit(20)
     )
-    sessions = result.all()
+    aggs = agg_result.all()
+    session_ids = [a.session_id for a in aggs]
+
+    # 2) 每个会话**最早**的用户消息内容 (按 created_at 升序取第一条) —— 用作标题
+    first_msg_by_session: dict[str, str] = {}
+    if session_ids:
+        first_result = await db.execute(
+            select(ChatMessage.session_id, ChatMessage.content)
+            .where(
+                ChatMessage.user_id == current_user.id,
+                ChatMessage.role == "user",
+                ChatMessage.session_id.in_(session_ids),
+            )
+            .order_by(ChatMessage.session_id, ChatMessage.created_at.asc())
+            .distinct(ChatMessage.session_id)  # Postgres DISTINCT ON: 每个 session 取排序后第一行
+        )
+        first_msg_by_session = {r.session_id: r.content for r in first_result.all()}
+
     return {"sessions": [{
-        "session_id": s.session_id,
-        "message_count": s.count,
-        "last_at": s.last_at.isoformat() if s.last_at else "",
-        "preview": (s.first_msg or "")[:60],
-    } for s in sessions]}
+        "session_id": a.session_id,
+        "message_count": a.count,
+        "last_at": a.last_at.isoformat() if a.last_at else "",
+        "preview": (first_msg_by_session.get(a.session_id, "") or "")[:60],
+    } for a in aggs]}
 
 
 @router.post("/", response_model=ChatResponse)

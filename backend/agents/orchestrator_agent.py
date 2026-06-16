@@ -122,6 +122,19 @@ ORCHESTRATOR_SYSTEM_PROMPT = """你是一个**专注于金融/证券行业的通
 - 需要并行处理多个独立子任务 (如同时分析多个行业/多个策略) → 用多个子 Agent 并行委派
 - 简单/单一职责任务不必委派; 但**不要因为"没有现成子Agent/工具"就拒绝** —— 用通用能力完成。
 
+## 产出物入库 (硬性规则 — 生成策略/选股后必须落库到对应模块)
+当你为用户**生成/设计**出以下成果时, 除了在回复里展示, **必须**调用对应工具写入业务模块,
+让成果出现在用户的相应页面里 (不要只在聊天里说说):
+- 设计出**交易策略** (技术面买卖规则/指标/条件) → 调用 `save_trading_strategy`
+  (传 name/description/strategy_type/indicators/buy_conditions/sell_conditions/risk_rules/parameters),
+  保存到【交易策略】模块。
+- 编写出**量化策略代码** (可运行的策略程序) → 调用 `save_quant_strategy`
+  (传 name/description/code/parameters, 有回测结果就带 performance_metrics), 保存到【量化交易】模块。
+- **选出/推荐了值得关注的个股** → 对每一只调用 `add_to_watchlist`
+  (传 stock_code/stock_name/added_reason, 有就带 target_price/stop_loss_price), 加入用户【自选股池】。
+- 入库成功后, 在回复里告知用户"已保存到 XX 模块 / 已加入自选股", 并说明可在哪个页面查看。
+- 仅"查询/分析/讲解"而非"生成新成果"时不必入库; 生成了就一定入库, 一只都不要漏。
+
 ## 时效性要求
 - 你的训练数据有截止日期, 不要依赖训练数据中的市场信息
 - 所有市场分析、新闻搜索、行情数据必须通过工具获取实时/最新数据
@@ -343,6 +356,8 @@ async def run_orchestrator_async(
     actor_id: str = "system",
 ) -> str:
     """运行编排Agent, 返回完整文本响应 (async)"""
+    from agents.sdk_tools import current_actor
+    current_actor.set(str(actor_id))  # 持久化工具据此把策略/选股写到该用户名下
     options = _build_options(session_id=session_id, actor_id=actor_id)
 
     text_parts: list[str] = []
@@ -406,6 +421,8 @@ async def run_orchestrator_stream_async(prompt: str, session_id: str = "default"
       {"type":"result","response":...,"session_id":...}                # 最终结果
       {"type":"error","message":...}
     """
+    from agents.sdk_tools import current_actor
+    current_actor.set(str(actor_id))  # 持久化工具据此把策略/选股写到该用户名下
     options = _build_options(session_id=session_id, actor_id=actor_id)
     text_parts: list[str] = []
     final_result: str | None = None

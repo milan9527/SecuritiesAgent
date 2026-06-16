@@ -31,14 +31,16 @@ _TRADER_TOOLS = (
     + TOOL_GROUPS["analysis"]
     + TOOL_GROUPS["trading"]
     + TOOL_GROUPS["notification"]
+    + TOOL_GROUPS["persistence"]   # 保存交易策略 / 加入自选股
 )
-_QUANT_TOOLS = TOOL_GROUPS["market-data"] + TOOL_GROUPS["quant"]
+_QUANT_TOOLS = TOOL_GROUPS["market-data"] + TOOL_GROUPS["quant"] + TOOL_GROUPS["persistence"]
 
 # 通用编程/执行能力 — 让子Agent能真正写代码、跑程序、读写文件 (像 Claude Code)。
 # quant-trader 尤其需要: 创建量化程序、跑回测、调试迭代。
 _DEV_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "mcp__agentcore", "TodoWrite"]
 _QUANT_TOOLS = _QUANT_TOOLS + _DEV_TOOLS
-_ANALYST_TOOLS = _ANALYST_TOOLS + ["WebSearch", "WebFetch", "mcp__agentcore", "Read", "Write", "TodoWrite"]
+_ANALYST_TOOLS = (_ANALYST_TOOLS + TOOL_GROUPS["persistence"]
+                  + ["WebSearch", "WebFetch", "mcp__agentcore", "Read", "Write", "TodoWrite"])
 
 
 INVESTMENT_ANALYST_PROMPT = """你是一位资深证券投资分析师, 拥有CFA资格和10年A股研究经验。
@@ -84,6 +86,11 @@ STOCK_TRADER_PROMPT = """你是一位专业的股票交易Agent, 负责制定和
 - 单笔亏损不超过5%, 单只仓位不超过总资金30%, 同时持仓不超过5只
 - 分批建仓, 顺势交易, 达到止损位无条件执行
 
+## 产出物入库 (硬性)
+- 设计出交易策略 → 调用 save_trading_strategy 保存到【交易策略】模块。
+- 选出值得买入/关注的个股 → 对每只调用 add_to_watchlist 加入用户【自选股池】(带理由/目标价/止损)。
+- 入库后在回复里说明已保存到哪个模块。
+
 ## 输出
 - 结果用 Markdown 表格: 代码 | 名称 | 当前价 | 信号 | 关键指标 | 理由
 """
@@ -122,6 +129,11 @@ QUANT_TRADER_PROMPT = """你是一位专业的量化交易Agent, 参考幻方量
   (建项目子目录)。严禁只写到 /tmp、~、/root 等临时路径 (容器回收即丢失)。
 - AgentCore Code Interpreter 沙箱是远程临时环境, 跑出的最终代码/产物要再 Write 落到工作区。
 - 产出后在回复里说明保存路径。
+
+## 量化策略入库 (硬性)
+- 编写出量化策略代码后, 除了 Write 到工作区文件, 还必须调用 save_quant_strategy 把策略
+  (name/description/code/parameters, 有回测就带 performance_metrics) 保存到用户【量化交易】模块,
+  让它出现在量化交易页面。入库后在回复里告知。
 """
 
 

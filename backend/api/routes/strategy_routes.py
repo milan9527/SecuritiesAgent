@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from db.database import get_db
 from db.models import User, TradingStrategy, QuantStrategy, Backtest, StrategyStatus, BacktestStatus
 from api.auth import get_current_user
+from api.internal_auth import resolve_internal_actor
 from api.schemas import (
     StrategyCreate, StrategyResponse,
     QuantStrategyCreate, BacktestRequest, BacktestResponse,
@@ -157,6 +159,64 @@ async def create_quant_strategy(
         "name": new_strategy.name,
         "status": "created",
     }
+
+
+# ── 内部端点: Agent (Runtime) 把生成的策略写入用户模块 (token 鉴权) ──
+class _InternalTradingSave(BaseModel):
+    token: str = ""
+    actor_id: str = ""
+    name: str
+    description: str = ""
+    strategy_type: str = "technical"
+    parameters: dict = {}
+    indicators: list = []
+    buy_conditions: list = []
+    sell_conditions: list = []
+    risk_rules: dict = {}
+
+
+class _InternalQuantSave(BaseModel):
+    token: str = ""
+    actor_id: str = ""
+    name: str
+    description: str = ""
+    template_name: str = ""
+    code: str = ""
+    parameters: dict = {}
+    performance_metrics: dict = {}
+
+
+@router.post("/internal/save-trading")
+async def internal_save_trading(req: _InternalTradingSave, db: AsyncSession = Depends(get_db)):
+    """Agent 调用: 把生成的交易策略保存到该用户的交易策略模块。"""
+    user = await resolve_internal_actor(req.token, req.actor_id, db)
+    s = TradingStrategy(
+        user_id=user.id, name=req.name[:100], description=req.description,
+        strategy_type=req.strategy_type or "technical", parameters=req.parameters or {},
+        indicators=req.indicators or [], buy_conditions=req.buy_conditions or [],
+        sell_conditions=req.sell_conditions or [], risk_rules=req.risk_rules or {},
+        status=StrategyStatus.DRAFT,
+    )
+    db.add(s)
+    await db.commit()
+    await db.refresh(s)
+    return {"id": str(s.id), "name": s.name, "status": "created", "module": "trading"}
+
+
+@router.post("/internal/save-quant")
+async def internal_save_quant(req: _InternalQuantSave, db: AsyncSession = Depends(get_db)):
+    """Agent 调用: 把生成的量化策略(含代码)保存到该用户的量化交易模块。"""
+    user = await resolve_internal_actor(req.token, req.actor_id, db)
+    s = QuantStrategy(
+        user_id=user.id, name=req.name[:100], description=req.description,
+        template_name=(req.template_name or "")[:50], code=req.code,
+        parameters=req.parameters or {}, performance_metrics=req.performance_metrics or {},
+        status=StrategyStatus.DRAFT,
+    )
+    db.add(s)
+    await db.commit()
+    await db.refresh(s)
+    return {"id": str(s.id), "name": s.name, "status": "created", "module": "quant"}
 
 
 @router.post("/quant/backtest")
