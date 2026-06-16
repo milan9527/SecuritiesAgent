@@ -213,9 +213,11 @@ class BackendStack(Stack):
             health_check=elbv2.HealthCheck(
                 path="/health",
                 interval=Duration.seconds(30),
-                timeout=Duration.seconds(5),
+                # 放宽: 重型 agent 任务运行时 task 较忙, 给更长超时/更多失败次数,
+                # 避免健康检查误杀正在跑长任务的 task。
+                timeout=Duration.seconds(10),
                 healthy_threshold_count=2,
-                unhealthy_threshold_count=3,
+                unhealthy_threshold_count=5,
             ),
             deregistration_delay=Duration.seconds(30),
         )
