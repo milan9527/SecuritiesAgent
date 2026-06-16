@@ -249,6 +249,9 @@ async def _build_task_prompt(task: ScheduledTask, user: User, db) -> str:
                 parts.append(f"[自选股池 (共{len(items)}只, 必须全部覆盖): {stock_list}]")
                 parts.append("严格要求: 涉及'自选股'的任务, 只能分析上面这个自选股池里的真实股票, "
                              "必须逐一覆盖全部, 不得用茅台/宁德等默认或'知名'股票替代, 不得遗漏或自行增减。")
+                parts.append("效率要求: 用一段代码 (AgentCore code interpreter + 外部数据 Skill) "
+                             "批量获取全部自选股的行情/指标 (一次拉完, 不要逐只串行多次调用), "
+                             "再统一分析输出。每只股票的结论简明扼要 (1-2 行), 用表格汇总。")
     except Exception:
         pass
 
