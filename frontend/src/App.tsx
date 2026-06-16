@@ -14,6 +14,7 @@ import AnalysisPage from './pages/AnalysisPage'
 import SettingsPage from './pages/SettingsPage'
 import DocumentsPage from './pages/DocumentsPage'
 import SchedulerPage from './pages/SchedulerPage'
+import WorkspacePage from './pages/WorkspacePage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
@@ -47,6 +48,7 @@ export default function App() {
                   <Route path="/chat" element={<ChatPage />} />
                   <Route path="/skills" element={<SkillsPage />} />
                   <Route path="/documents" element={<DocumentsPage />} />
+                  <Route path="/workspace" element={<WorkspacePage />} />
                   <Route path="/scheduler" element={<SchedulerPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
                 </Routes>
