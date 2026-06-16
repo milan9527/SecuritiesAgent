@@ -30,8 +30,13 @@ from claude_agent_sdk import (
     query,
     ClaudeAgentOptions,
     AssistantMessage,
+    UserMessage,
     ResultMessage,
     TextBlock,
+    ThinkingBlock,
+    ToolUseBlock,
+    ToolResultBlock,
+    StreamEvent,
     get_session_info,
 )
 
@@ -52,27 +57,52 @@ def _claude_config_dir() -> str:
     os.makedirs(d, exist_ok=True)
     return d
 
+
+def _workspace_dir() -> str:
+    """Agent 的持久工作区 (EFS 上)。用户让 agent 创建的量化程序/项目/数据/报告落此处,
+    跨会话保留, 后续可继续之前的项目。与 skills 目录分开。"""
+    root = os.environ.get("AGENTCORE_SKILLS_ROOT", "").strip() or _BAKED_SKILLS_ROOT
+    d = os.path.join(root, "workspace")
+    os.makedirs(d, exist_ok=True)
+    return d
+
 from agents.model_loader import configure_bedrock_env
 from agents.sdk_tools import securities_mcp_server, all_tool_names
 from agents.subagents import build_subagents
 
-ORCHESTRATOR_SYSTEM_PROMPT = """你是证券交易助手平台的总编排Agent。
+ORCHESTRATOR_SYSTEM_PROMPT = """你是一个**专注于金融/证券行业的通用 AI Agent**, 能力对标 Claude Code CLI:
+既能像金融分析师一样做行情/研究/交易/量化, 也能像通用编程 Agent 一样自由编写并运行代码、
+编排多个子 Agent、跑完整 workflow、读写文件、搜索网络。你不是只会执行写死的几个任务的机器人 ——
+用户提出的任何金融相关需求 (哪怕没有现成工具/skill), 你都应当用通用能力 (写代码、跑程序、
+组合工具、委派子 Agent) 把它完成。
+
+## 通用 Agent 能力 (像 Claude Code 一样工作)
+- **写代码并运行**: 用户要"创建量化交易程序/数据管道/回测框架/策略脚本"等, 你应当真的把代码
+  写到工作区文件 (Write/Edit), 然后用 Bash 或 AgentCore Code Interpreter 运行、调试、迭代,
+  直到产出可用结果, 并把关键代码和运行结果展示给用户。
+- **持久工作区**: 你有一个持久工作目录 (EFS, 跨会话保留)。把多文件项目 (策略代码、数据、报告)
+  组织在子目录里; 后续会话可以继续之前的项目。用 Glob/Grep/Read 浏览已有文件。
+- **多子 Agent 编排**: 复杂任务可拆解, 用 Agent 工具并行/串行委派给子 Agent (见下), 也可以为
+  一次性的专门子任务即时定义角色。汇总各子 Agent 结果后给出整体结论。
+- **任务规划**: 多步骤任务先用 TodoWrite 列计划再逐步执行, 让用户看到进度。
+- **联网**: 需要最新信息/文档/政策时用 WebSearch / WebFetch。
+
+## 委派规则 (内置专业子Agent — 按需使用, 不强制)
+- investment-analysis / 研究 / 新闻 / 公司分析 → 可委派 investment-analyst
+- 交易 / 买卖 / 模拟盘 / 策略信号 → 可委派 stock-trader
+- 量化 / 回测 / 策略代码 → 可委派 quant-trader
+- 简单行情查询 (价格/涨跌幅) → 直接调用 get_stock_realtime_quote 等工具
+- 需要并行处理多个独立子任务 (如同时分析多个行业/多个策略) → 用多个子 Agent 并行委派
+- 简单/单一职责任务不必委派; 但**不要因为"没有现成子Agent/工具"就拒绝** —— 用通用能力完成。
 
 ## 时效性要求
 - 你的训练数据有截止日期, 不要依赖训练数据中的市场信息
 - 所有市场分析、新闻搜索、行情数据必须通过工具获取实时/最新数据
 - 涉及"本周""今日""最新"等时间相关请求时, 必须调用工具获取当前数据, 不要凭记忆回答
 
-## 委派规则 (子Agent)
-- investment-analysis / 研究 / 新闻 / 公司分析 → 委派 investment-analyst 子Agent
-- 交易 / 买卖 / 模拟盘 / 策略信号 → 委派 stock-trader 子Agent
-- 量化 / 回测 / 策略代码 → 委派 quant-trader 子Agent
-- 简单行情查询 (价格/涨跌幅) → 直接调用 get_stock_realtime_quote 等工具, 不必委派
-
-## 严格执行规则
-- 每个请求委派给最合适的 **1个** 子Agent, 不要串联多个子Agent
+## 执行原则
 - 不要重复调用同类工具; 同一工具失败2次后换工具或基于已有数据给结论
-- 只有用户明确要求"回测"或"量化策略"时才委派 quant-trader
+- 长任务边做边用 TodoWrite/文字说明进度 (前端会实时显示你的思考、工具调用和子Agent活动)
 
 ## Skill 使用 (平台硬性规则: 外部专业 Skill 优先, 第一步就用)
 **强制流程 — 处理任何行情/数据/分析类请求前, 第一步必须先做:**
@@ -234,14 +264,19 @@ def _build_options(session_id: str = "default", actor_id: str = "system") -> Cla
         model=model_id,
         system_prompt=system_prompt,
         mcp_servers=mcp_servers,
-        # MCP 证券工具 + AgentCore MCP(browser/code-interpreter) + 子Agent委派 + 内置 Bash/Read/Write/Glob/Grep
+        # 全部 Claude Code 能力: MCP 证券工具 + AgentCore(browser/code-interpreter)
+        # + 子Agent编排(Agent/Task) + 文件读写编辑(Read/Write/Edit) + 执行(Bash)
+        # + 检索(Glob/Grep) + 联网(WebSearch/WebFetch) + 任务规划(TodoWrite)
         allowed_tools=all_tool_names() + extra_allowed
-                      + ["Agent", "Bash", "Read", "Write", "Glob", "Grep"],
+                      + ["Agent", "Task", "Bash", "Read", "Write", "Edit", "MultiEdit",
+                         "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite", "NotebookEdit"],
         agents=build_subagents(),
         cwd=project_cwd,
+        add_dirs=[_workspace_dir()],          # 持久工作区 (EFS), 跨会话保留用户的代码/项目
         setting_sources=["project"],
         skills="all",
         permission_mode="bypassPermissions",
+        include_partial_messages=True,        # 逐 token 流式 (前端实时显示)
         env={"CLAUDE_CONFIG_DIR": config_dir},  # 会话历史落 EFS, 跨容器持久
         # 浏览器快照/截图等 MCP 工具返回体很大, 默认 1MB stdout 缓冲会溢出 → 调到 32MB
         max_buffer_size=32 * 1024 * 1024,
@@ -292,33 +327,153 @@ def run_orchestrator(prompt: str, session_id: str = "default", actor_id: str = "
     return asyncio.run(run_orchestrator_async(prompt, session_id=session_id, actor_id=actor_id))
 
 
+def _short(obj, n: int = 300) -> str:
+    """把工具输入/结果压成简短预览, 供前端折叠显示。"""
+    try:
+        import json as _j
+        s = obj if isinstance(obj, str) else _j.dumps(obj, ensure_ascii=False, default=str)
+    except Exception:
+        s = str(obj)
+    s = " ".join(s.split())
+    return s[:n] + ("…" if len(s) > n else "")
+
+
+def _tool_label(name: str) -> str:
+    """把内部工具名转成对用户友好的中文标签 (Claude Code 风格活动行)。"""
+    n = name or ""
+    if n.startswith("mcp__agentcore__"):
+        rest = n[len("mcp__agentcore__"):]
+        if "code" in rest or "execute" in rest or "command" in rest or "package" in rest:
+            return f"代码解释器 · {rest}"
+        if "browser" in rest:
+            return f"浏览器 · {rest}"
+        return f"AgentCore · {rest}"
+    if n.startswith("mcp__securities__"):
+        return f"证券工具 · {n[len('mcp__securities__'):]}"
+    if n in ("Agent", "Task"):
+        return "委派子Agent"
+    return n
+
+
+async def run_orchestrator_stream_async(prompt: str, session_id: str = "default", actor_id: str = "system"):
+    """流式运行编排Agent, 逐个 yield 结构化事件 dict (供 SSE 实时推送到前端)。
+
+    事件类型:
+      {"type":"text","content":...}           # 正文 token (逐 token)
+      {"type":"thinking","content":...}        # 思考过程 (逐 token)
+      {"type":"tool_use","name","label","id","input","subagent":bool}  # 发起工具调用
+      {"type":"tool_result","tool_use_id","is_error","preview"}        # 工具返回
+      {"type":"subagent","name","description"}                          # 子Agent启动
+      {"type":"result","response":...,"session_id":...}                # 最终结果
+      {"type":"error","message":...}
+    """
+    options = _build_options(session_id=session_id, actor_id=actor_id)
+    text_parts: list[str] = []
+    final_result: str | None = None
+
+    try:
+        async for message in query(prompt=prompt, options=options):
+            # 1) 逐 token 流 (partial messages): 正文 / 思考
+            if isinstance(message, StreamEvent):
+                ev = message.event or {}
+                etype = ev.get("type")
+                is_sub = bool(getattr(message, "parent_tool_use_id", None))
+                if etype == "content_block_delta":
+                    delta = ev.get("delta", {})
+                    dt = delta.get("type")
+                    if dt == "text_delta" and delta.get("text"):
+                        if not is_sub:
+                            text_parts.append(delta["text"])
+                        yield {"type": "text", "content": delta["text"], "subagent": is_sub}
+                    elif dt == "thinking_delta" and delta.get("thinking"):
+                        yield {"type": "thinking", "content": delta["thinking"], "subagent": is_sub}
+                continue
+
+            # 2) 完整助手消息: 抓工具调用 (文本已经逐 token 流过, 不重复发)
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, ToolUseBlock):
+                        name = block.name or ""
+                        is_sub = name in ("Agent", "Task")
+                        evt = {
+                            "type": "tool_use",
+                            "name": name,
+                            "label": _tool_label(name),
+                            "id": block.id,
+                            "input": _short(block.input, 400),
+                            "subagent": is_sub,
+                        }
+                        if is_sub:
+                            inp = block.input or {}
+                            evt["subagent_type"] = inp.get("subagent_type") or inp.get("description") or ""
+                        yield evt
+                continue
+
+            # 3) 工具结果 (SDK 以 UserMessage 回传)
+            if isinstance(message, UserMessage):
+                content = message.content
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, ToolResultBlock):
+                            yield {
+                                "type": "tool_result",
+                                "tool_use_id": block.tool_use_id,
+                                "is_error": bool(getattr(block, "is_error", False)),
+                                "preview": _short(block.content, 300),
+                            }
+                continue
+
+            # 4) 最终结果
+            if isinstance(message, ResultMessage):
+                final_result = getattr(message, "result", None)
+
+    except Exception as e:  # noqa: BLE001
+        import traceback
+        print(f"[orchestrator stream] error: {e}\n{traceback.format_exc()}")
+        yield {"type": "error", "message": str(e)[:300]}
+
+    response = final_result or "".join(text_parts) or "Agent未返回响应"
+    yield {"type": "result", "response": response, "session_id": session_id}
+
+
 # ── AgentCore Runtime 入口 ──
 app = BedrockAgentCoreApp()
 
 
 @app.entrypoint
-def invoke(payload: dict):
-    """AgentCore Runtime入口点 - SecuritiesTradingAgent (Claude Agent SDK)"""
+async def invoke(payload: dict):
+    """AgentCore Runtime入口点 - SecuritiesTradingAgent (Claude Agent SDK)。
+
+    - payload.stream=True  → 返回 async generator, BedrockAgentCoreApp 自动以
+      text/event-stream (SSE) 逐事件推送 (前端实时显示思考/工具/子Agent/正文)。
+    - 否则 → 阻塞执行, 返回完整 JSON (定期任务等非交互场景用)。
+    """
+    prompt = payload.get("prompt", "你好")
+    session_id = payload.get("session_id", "default")
+    user_id = payload.get("user_id", "anonymous")
+    stream = bool(payload.get("stream", False))
+
+    if stream:
+        # 流式: 返回 async generator → SSE。每个 yield 的 dict 被框架包成 `data: {...}\n\n`
+        async def _gen():
+            async for evt in run_orchestrator_stream_async(prompt, session_id=session_id, actor_id=user_id):
+                yield evt
+        return _gen()
+
+    # 非流式 (阻塞)
     with tracer.start_as_current_span("agent_invoke") as span:
         start = time.time()
-        prompt = payload.get("prompt", "你好")
-        session_id = payload.get("session_id", "default")
-        user_id = payload.get("user_id", "anonymous")
-
         span.set_attribute("request.prompt_length", len(prompt))
         span.set_attribute("request.session_id", session_id)
         span.set_attribute("request.user_id", user_id)
-
         try:
             print(f"[Invoke] prompt={prompt[:100]}... session={session_id} user={user_id}")
             with tracer.start_as_current_span("agent_run") as run_span:
-                response_text = run_orchestrator(prompt, session_id=session_id, actor_id=user_id)
+                response_text = await run_orchestrator_async(prompt, session_id=session_id, actor_id=user_id)
                 run_span.set_attribute("response.length", len(response_text))
-
             span.set_attribute("response.duration_ms", int((time.time() - start) * 1000))
             span.set_status(StatusCode.OK)
             return {"response": response_text, "session_id": session_id, "user_id": user_id}
-
         except Exception as e:
             span.set_status(StatusCode.ERROR, str(e))
             span.record_exception(e)

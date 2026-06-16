@@ -1,7 +1,10 @@
 """
-Agent对话路由 - 通过AgentCore Runtime调用Agent
-对话存储: 消息存 DB (展示/历史); 多轮上下文记忆由 Claude Agent SDK 原生会话管理
-(transcript 落 EFS 上的 CLAUDE_CONFIG_DIR, 同一 session resume 续接), 未使用 AgentCore Memory。
+Agent对话路由 - 通过 AgentCore Runtime 流式调用 Agent (SSE)。
+- 实时流式: Runtime 以 SSE 逐事件返回 (思考/工具调用/子Agent/逐token正文), 本路由透传到前端,
+  实现 Claude Code CLI 式实时显示; 持续数据流 → 不触发 CloudFront/ALB 超时。
+- 多轮上下文: Claude Agent SDK 原生会话 (transcript 落 EFS 的 CLAUDE_CONFIG_DIR, 同 session resume)。
+- 长期记忆: AgentCore Memory (调用前 recall 偏好/情节注入, 调用后 record STM)。
+- 消息存 DB 用于展示/历史。
 """
 from __future__ import annotations
 
@@ -152,43 +155,55 @@ async def chat_with_agent(
     await db.commit()
 
     async def generate():
-        """SSE stream: send keepalive pings while agent processes, then final result."""
-        import concurrent.futures
+        """SSE stream: 实时转发 Agent 的流式事件 (思考/工具/子Agent/逐token正文),
+        最后发 result。持续有数据流出 → 不会触发 CloudFront/ALB 超时。"""
+        import threading, queue as _queue
 
-        # Send immediate first ping so CloudFront gets first byte quickly
+        # 立即首字节, 让 CloudFront 尽快拿到 first byte
         yield f"data: {_json.dumps({'type': 'ping', 'elapsed': 0})}\n\n"
 
         loop = asyncio.get_event_loop()
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        q: asyncio.Queue = asyncio.Queue()
+        _SENTINEL = object()
 
-        # Start agent call in background thread
-        from agents.runtime_client import invoke_runtime_agent
-        future = loop.run_in_executor(
-            executor,
-            lambda: invoke_runtime_agent(prompt=context_prompt, session_id=session_id, user_id=str(current_user.id))
-        )
-
-        # Send keepalive pings every 10s while waiting
-        elapsed = 0
-        while not future.done():
+        # 在后台线程跑同步流式生成器, 把事件投递到 asyncio.Queue
+        def _produce():
+            from agents.runtime_client import stream_runtime_agent
             try:
-                await asyncio.wait_for(asyncio.shield(future), timeout=10)
-                break  # Future completed
-            except asyncio.TimeoutError:
-                elapsed += 10
-                ping = _json.dumps({"type": "ping", "elapsed": elapsed}, ensure_ascii=False)
-                yield f"data: {ping}\n\n"
+                for evt in stream_runtime_agent(
+                    prompt=context_prompt, session_id=session_id, user_id=str(current_user.id)
+                ):
+                    loop.call_soon_threadsafe(q.put_nowait, evt)
+            except Exception as e:  # noqa: BLE001
+                print(f"[Chat Error] {e}\n{traceback.format_exc()}")
+                loop.call_soon_threadsafe(q.put_nowait, {"type": "error", "message": str(e)[:300]})
+            finally:
+                loop.call_soon_threadsafe(q.put_nowait, _SENTINEL)
 
-        # Get result
-        try:
-            response_text = await future
-        except Exception as e:
-            error_msg = str(e)
-            print(f"[Chat Error] {error_msg}\n{traceback.format_exc()}")
-            if "ReadTimeout" in error_msg or "timed out" in error_msg.lower():
-                response_text = "⚠️ AgentCore Runtime响应超时，请稍后重试。"
-            else:
-                response_text = f"⚠️ Agent调用出错: {error_msg[:300]}"
+        threading.Thread(target=_produce, daemon=True).start()
+
+        response_text = ""
+        last_emit = loop.time()
+        while True:
+            try:
+                evt = await asyncio.wait_for(q.get(), timeout=10)
+            except asyncio.TimeoutError:
+                # 静默期发 keepalive ping (防代理超时)
+                yield f"data: {_json.dumps({'type': 'ping', 'elapsed': int(loop.time() - last_emit)}, ensure_ascii=False)}\n\n"
+                continue
+            if evt is _SENTINEL:
+                break
+            last_emit = loop.time()
+            etype = evt.get("type")
+            if etype == "result":
+                response_text = evt.get("response", "") or response_text
+            elif etype == "error" and not response_text:
+                response_text = f"⚠️ {evt.get('message', 'Agent调用出错')}"
+            # 透传给前端 (含 text/thinking/tool_use/tool_result/result/error)
+            yield f"data: {_json.dumps(evt, ensure_ascii=False)}\n\n"
+
+        if not response_text:
+            response_text = "Agent未返回响应"
 
         # Save assistant response to DB
         async with AsyncSessionLocal() as save_db:
@@ -207,15 +222,15 @@ async def chat_with_agent(
         except Exception as e:
             print(f"[Chat] memory record failed: {e}")
 
-        # Send final result
-        result = _json.dumps({
-            "type": "result",
+        # 结束事件 (带最终元数据, 前端据此定稿消息)
+        done = _json.dumps({
+            "type": "done",
             "response": response_text,
             "session_id": session_id,
             "agent_type": request.agent_type or "orchestrator",
             "timestamp": datetime.now().isoformat(),
         }, ensure_ascii=False)
-        yield f"data: {result}\n\n"
+        yield f"data: {done}\n\n"
 
     return StreamingResponse(
         generate(),

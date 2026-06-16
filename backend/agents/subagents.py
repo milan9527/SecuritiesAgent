@@ -34,6 +34,12 @@ _TRADER_TOOLS = (
 )
 _QUANT_TOOLS = TOOL_GROUPS["market-data"] + TOOL_GROUPS["quant"]
 
+# 通用编程/执行能力 — 让子Agent能真正写代码、跑程序、读写文件 (像 Claude Code)。
+# quant-trader 尤其需要: 创建量化程序、跑回测、调试迭代。
+_DEV_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "mcp__agentcore", "TodoWrite"]
+_QUANT_TOOLS = _QUANT_TOOLS + _DEV_TOOLS
+_ANALYST_TOOLS = _ANALYST_TOOLS + ["WebSearch", "WebFetch", "mcp__agentcore", "Read", "Write", "TodoWrite"]
+
 
 INVESTMENT_ANALYST_PROMPT = """你是一位资深证券投资分析师, 拥有CFA资格和10年A股研究经验。
 
@@ -103,6 +109,12 @@ QUANT_TRADER_PROMPT = """你是一位专业的量化交易Agent, 参考幻方量
 ## 策略代码规范
 - 含 initialize(context) 和 handle_data(context, data)
 - handle_data 返回 {'signal': 'buy/sell/hold', 'weight': 0.25}
+
+## 创建量化程序 (像 Claude Code 一样真正写代码并运行)
+- 用户要"创建量化交易程序/策略框架/数据管道"时, 不要只贴一段示例文本: 用 Write 把完整、
+  可运行的 Python 程序写到工作区文件 (可分多文件), 用 Bash 或 AgentCore Code Interpreter
+  实际运行、调试、迭代到跑通, 再把代码结构、关键逻辑和运行/回测结果展示给用户。
+- 程序保存在持久工作区 (EFS), 跨会话保留, 用户后续可继续完善。
 """
 
 

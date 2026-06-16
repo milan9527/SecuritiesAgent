@@ -87,6 +87,99 @@ def _invoke_local(prompt: str, session_id: str, user_id: str) -> str:
     return run_orchestrator(prompt, session_id=session_id, actor_id=user_id)
 
 
+def stream_runtime_agent(prompt: str, session_id: str = "default", user_id: str = "anonymous"):
+    """流式调用 Agent, 逐个 yield 事件 dict (text/thinking/tool_use/tool_result/result/error)。
+
+    优先经 AgentCore Runtime (payload.stream=True → Runtime 返回 SSE 流);
+    无 Runtime ARN 或调用失败时, 回退到进程内 SDK 编排器的流式生成。
+    供 chat_routes 在 SSE 响应里直接转发到前端 (实时显示, 无超时)。
+    """
+    agent_arn = _get_agent_arn()
+    if not agent_arn:
+        yield from _stream_local(prompt, session_id, user_id)
+        return
+    try:
+        yield from _stream_runtime(agent_arn, prompt, session_id, user_id)
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        print(f"[RuntimeClient] stream invoke failed: {msg}")
+        if "not found" in msg.lower() or "not ready" in msg.lower():
+            yield from _stream_local(prompt, session_id, user_id)
+        else:
+            yield {"type": "error", "message": msg[:300]}
+
+
+def _stream_local(prompt: str, session_id: str, user_id: str):
+    """进程内 SDK 编排器流式 (本地/Runtime 不可用时回退)。把 async generator 抽成同步。"""
+    import asyncio
+    from agents.orchestrator_agent import run_orchestrator_stream_async
+
+    queue: "list" = []
+    agen = run_orchestrator_stream_async(prompt, session_id=session_id, actor_id=user_id)
+
+    async def _drain(out: list):
+        async for evt in agen:
+            out.append(evt)
+
+    # 简单实现: 收集后逐个 yield (本地回退场景, 不要求真增量)。
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_drain(queue))
+    finally:
+        loop.close()
+    for evt in queue:
+        yield evt
+
+
+def _stream_runtime(agent_arn: str, prompt: str, session_id: str, user_id: str):
+    """经 AgentCore Runtime 流式调用: payload.stream=True, 读取 SSE StreamingBody。"""
+    client = boto3.client("bedrock-agentcore", region_name=settings.AWS_REGION,
+                          config=BotoConfig(read_timeout=900, connect_timeout=10))
+    if len(session_id) < 33:
+        session_id = (session_id + "-" + ("0" * 33))[:48]
+
+    payload = json.dumps({
+        "prompt": prompt, "session_id": session_id, "user_id": user_id, "stream": True,
+    })
+    response = client.invoke_agent_runtime(
+        agentRuntimeArn=agent_arn,
+        runtimeSessionId=session_id,
+        runtimeUserId=user_id,
+        contentType="application/json",
+        accept="text/event-stream",
+        payload=payload.encode("utf-8"),
+    )
+    body = response.get("response")
+    ctype = response.get("contentType", "") or ""
+
+    # 非流式回退: Runtime 返回了普通 JSON (未走 SSE)
+    if "event-stream" not in ctype:
+        data = body.read().decode("utf-8") if hasattr(body, "read") else (
+            body.decode("utf-8") if isinstance(body, bytes) else str(body))
+        try:
+            parsed = json.loads(data)
+            yield {"type": "result", "response": parsed.get("response", data), "session_id": session_id}
+        except json.JSONDecodeError:
+            yield {"type": "result", "response": data, "session_id": session_id}
+        return
+
+    # SSE: 逐行解析 `data: {...}`
+    buffer = ""
+    iterator = body.iter_lines() if hasattr(body, "iter_lines") else body
+    for raw in iterator:
+        if raw is None:
+            continue
+        line = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
+        if not line:
+            continue
+        if line.startswith("data: "):
+            chunk = line[6:]
+            try:
+                yield json.loads(chunk)
+            except json.JSONDecodeError:
+                buffer += chunk
+
+
 def _invoke_runtime(agent_arn: str, prompt: str, session_id: str, user_id: str) -> str:
     """通过AgentCore Runtime API调用Agent"""
     client = boto3.client("bedrock-agentcore", region_name=settings.AWS_REGION,

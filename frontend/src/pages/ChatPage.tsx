@@ -1,11 +1,28 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Send, Bot, User, Sparkles, MessageSquarePlus, History, Clock, ChevronLeft, Trash2 } from 'lucide-react'
+import { Send, Bot, User, Sparkles, MessageSquarePlus, History, Clock, ChevronLeft, Trash2, Wrench, Brain, Users, ChevronRight, Terminal } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import api from '../services/api'
 import toast from 'react-hot-toast'
 
-interface Message { role: 'user' | 'assistant'; content: string; timestamp: string }
+// 一条 Agent 活动 (工具调用 / 子Agent / 思考), 在助手消息内折叠显示 (Claude Code 风格)
+interface Activity {
+  id: string
+  kind: 'tool' | 'subagent' | 'thinking'
+  label: string
+  input?: string
+  result?: string
+  isError?: boolean
+  done?: boolean
+}
+interface Message {
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: string
+  activities?: Activity[]
+  thinking?: string
+  streaming?: boolean
+}
 
 // Agent presets with default skill mappings
 const agentPresets: Record<string, { label: string; icon: string; skills: string[] }> = {
@@ -25,6 +42,29 @@ const samplesByFocus: Record<string, string[]> = {
   'notification-skill': ['生成今日投资报告'],
   'browser-crawler-skill': ['使用浏览器获取动态网页数据'],
   'code-interpreter-skill': ['执行Python代码分析数据'],
+}
+
+// 单条活动行 (可展开看 输入/结果)
+function ActivityRow({ a }: { a: Activity }) {
+  const [open, setOpen] = useState(false)
+  const Icon = a.kind === 'subagent' ? Users : a.kind === 'thinking' ? Brain : (a.label?.includes('代码') ? Terminal : Wrench)
+  return (
+    <div className="rounded-md border border-surface-border/40 bg-surface-dark/40 overflow-hidden">
+      <button onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-surface-hover/30 transition-colors">
+        <ChevronRight className={`w-3 h-3 text-gray-600 transition-transform ${open ? 'rotate-90' : ''}`} />
+        <Icon className={`w-3.5 h-3.5 ${a.isError ? 'text-red-400' : a.done ? 'text-green-400' : 'text-primary-400'} ${!a.done ? 'animate-pulse' : ''}`} />
+        <span className="text-[11px] text-gray-300 truncate flex-1">{a.label}</span>
+        {!a.done && <span className="text-[9px] text-gray-600">运行中…</span>}
+      </button>
+      {open && (
+        <div className="px-3 pb-2 space-y-1.5 text-[10px] font-mono">
+          {a.input && <div><span className="text-gray-600">输入:</span> <span className="text-gray-400 break-all">{a.input}</span></div>}
+          {a.result && <div><span className="text-gray-600">结果:</span> <span className={`break-all ${a.isError ? 'text-red-400' : 'text-gray-400'}`}>{a.result}</span></div>}
+        </div>
+      )}
+    </div>
+  )
 }
 
 export default function ChatPage() {
@@ -73,13 +113,26 @@ export default function ChatPage() {
   const handleSend = async () => {
     if (!input.trim() || loading) return
     const userMsg: Message = { role: 'user', content: input, timestamp: new Date().toISOString() }
-    setMessages(prev => [...prev, userMsg])
+    // 追加用户消息 + 一条空的流式助手消息 (实时填充)
+    setMessages(prev => [...prev, userMsg, {
+      role: 'assistant', content: '', timestamp: new Date().toISOString(),
+      activities: [], thinking: '', streaming: true,
+    }])
     const currentInput = input
     setInput('')
     setLoading(true)
 
+    // 仅更新最后一条 (流式助手) 消息
+    const patchLast = (fn: (m: Message) => Message) =>
+      setMessages(prev => {
+        const next = [...prev]
+        for (let i = next.length - 1; i >= 0; i--) {
+          if (next[i].role === 'assistant') { next[i] = fn(next[i]); break }
+        }
+        return next
+      })
+
     try {
-      // Use SSE streaming to avoid CloudFront/ALB timeout
       const token = (() => {
         try { const s = localStorage.getItem('auth-storage'); return s ? JSON.parse(s).state?.token : '' } catch { return '' }
       })()
@@ -89,14 +142,53 @@ export default function ChatPage() {
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ message: currentInput, session_id: sessionId, agent_type: agentType }),
       })
-
       if (!response.ok) throw new Error(`Request failed with status ${response.status}`)
 
-      const contentType = response.headers.get('content-type') || ''
-      let resultData: any = null
+      const handleEvent = (e: any) => {
+        switch (e.type) {
+          case 'text':
+            if (e.content) patchLast(m => ({ ...m, content: m.content + e.content }))
+            break
+          case 'thinking':
+            if (e.content) patchLast(m => ({ ...m, thinking: (m.thinking || '') + e.content }))
+            break
+          case 'tool_use':
+            patchLast(m => ({
+              ...m,
+              activities: [...(m.activities || []), {
+                id: e.id || `${Date.now()}-${Math.random()}`,
+                kind: e.subagent ? 'subagent' : 'tool',
+                label: e.subagent ? `委派子Agent${e.subagent_type ? ' · ' + e.subagent_type : ''}` : (e.label || e.name),
+                input: e.input,
+              }],
+            }))
+            break
+          case 'tool_result':
+            patchLast(m => ({
+              ...m,
+              activities: (m.activities || []).map(a =>
+                a.id === e.tool_use_id ? { ...a, result: e.preview, isError: e.is_error, done: true } : a),
+            }))
+            break
+          case 'result':
+            if (e.response) patchLast(m => ({ ...m, content: e.response }))
+            break
+          case 'done':
+            patchLast(m => ({
+              ...m,
+              content: e.response || m.content,
+              streaming: false,
+              timestamp: e.timestamp || m.timestamp,
+            }))
+            break
+          case 'error':
+            patchLast(m => ({ ...m, content: m.content || `⚠️ ${e.message}`, streaming: false }))
+            break
+        }
+      }
 
+      const contentType = response.headers.get('content-type') || ''
       if (contentType.includes('text/event-stream')) {
-        // SSE streaming response
         const reader = response.body?.getReader()
         const decoder = new TextDecoder()
         if (reader) {
@@ -109,43 +201,24 @@ export default function ChatPage() {
             buffer = lines.pop() || ''
             for (const line of lines) {
               if (line.startsWith('data: ')) {
-                try {
-                  const parsed = JSON.parse(line.slice(6))
-                  if (parsed.type === 'result') resultData = parsed
-                } catch {}
+                try { handleEvent(JSON.parse(line.slice(6))) } catch {}
               }
             }
           }
-          // Check remaining buffer
-          if (!resultData && buffer.trim()) {
+          if (buffer.trim()) {
             for (const line of buffer.split('\n')) {
-              if (line.startsWith('data: ')) {
-                try {
-                  const parsed = JSON.parse(line.slice(6))
-                  if (parsed.type === 'result') resultData = parsed
-                } catch {}
-              }
+              if (line.startsWith('data: ')) { try { handleEvent(JSON.parse(line.slice(6))) } catch {} }
             }
           }
         }
       } else {
-        // Regular JSON response (local dev)
-        resultData = await response.json()
+        const j = await response.json()
+        handleEvent({ type: 'done', ...j })
       }
-
-      if (resultData) {
-        setMessages(prev => [...prev, {
-          role: 'assistant', content: resultData.response,
-          timestamp: resultData.timestamp || new Date().toISOString(),
-        }])
-      } else {
-        throw new Error('No response received')
-      }
+      patchLast(m => ({ ...m, streaming: false }))
       refreshSessions()
     } catch (err: any) {
-      setMessages(prev => [...prev, {
-        role: 'assistant', content: `⚠️ ${err.message}`, timestamp: new Date().toISOString(),
-      }])
+      patchLast(m => ({ ...m, content: m.content || `⚠️ ${err.message}`, streaming: false }))
     }
     setLoading(false)
   }
@@ -241,7 +314,7 @@ export default function ChatPage() {
             <div>
               <h1 className="text-lg font-bold text-white">Agent Playground</h1>
               <p className="text-[10px] text-gray-500">
-                全部 Skill 自动可用 · AgentCore Memory
+                金融通用 Agent · 写代码/跑程序/编排子Agent · 实时流式 · AgentCore Memory
               </p>
             </div>
           </div>
@@ -261,8 +334,8 @@ export default function ChatPage() {
           {messages.length === 0 && (
             <div className="flex flex-col items-center justify-center h-full text-center">
               <Bot className="w-14 h-14 text-gray-600 mb-4" />
-              <h2 className="text-lg text-gray-400 mb-1">Agent Playground</h2>
-              <p className="text-sm text-gray-600 mb-6">对话存储在AgentCore Memory，支持跨会话记忆</p>
+              <h2 className="text-lg text-gray-400 mb-1">金融通用 AI Agent</h2>
+              <p className="text-sm text-gray-600 mb-6">能写量化程序、跑回测、编排子Agent、联网研究 · 实时显示思考与工具调用 · 跨会话记忆</p>
               <div className="flex flex-wrap gap-2 justify-center max-w-lg">
                 {activeSamples.map(s => (
                   <button key={s} onClick={() => setInput(s)}
@@ -283,20 +356,43 @@ export default function ChatPage() {
               )}
               <div className={`max-w-[75%] rounded-xl px-4 py-3 ${msg.role === 'user' ? 'bg-primary-500/20 border border-primary-500/30' : 'bg-surface-card border border-surface-border'}`}>
                 {msg.role === 'assistant' ? (
-                  <div className="prose prose-invert prose-sm max-w-none
-                    prose-headings:text-accent-gold prose-headings:font-semibold
-                    prose-strong:text-white
-                    prose-p:text-gray-300 prose-p:leading-relaxed
-                    prose-table:text-xs prose-table:border-collapse prose-table:w-full
-                    prose-thead:bg-surface-hover/50
-                    prose-th:px-2 prose-th:py-1.5 prose-th:text-left prose-th:border prose-th:border-surface-border/50 prose-th:text-gray-400 prose-th:font-semibold
-                    prose-td:px-2 prose-td:py-1.5 prose-td:border prose-td:border-surface-border/50 prose-td:text-gray-300
-                    prose-li:text-gray-300 prose-li:leading-relaxed
-                    prose-blockquote:border-l-accent-gold prose-blockquote:bg-accent-gold/5 prose-blockquote:text-gray-400
-                    prose-hr:border-surface-border
-                    prose-code:text-accent-gold prose-code:bg-surface-hover prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs
-                    text-sm">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                  <div className="space-y-2">
+                    {/* 活动轨迹: 工具调用 / 子Agent (Claude Code 风格) */}
+                    {msg.activities && msg.activities.length > 0 && (
+                      <div className="space-y-1">
+                        {msg.activities.map(a => <ActivityRow key={a.id} a={a} />)}
+                      </div>
+                    )}
+                    {/* 思考过程 (折叠) */}
+                    {msg.thinking && msg.thinking.trim() && (
+                      <details className="rounded-md border border-surface-border/40 bg-surface-dark/40">
+                        <summary className="px-2 py-1.5 flex items-center gap-2 cursor-pointer text-[11px] text-gray-400 hover:text-gray-300">
+                          <Brain className="w-3.5 h-3.5 text-purple-400" /> 思考过程
+                        </summary>
+                        <div className="px-3 pb-2 text-[10px] text-gray-500 whitespace-pre-wrap leading-relaxed">{msg.thinking}</div>
+                      </details>
+                    )}
+                    {/* 正文 (逐 token) */}
+                    {msg.content ? (
+                      <div className="prose prose-invert prose-sm max-w-none
+                        prose-headings:text-accent-gold prose-headings:font-semibold
+                        prose-strong:text-white
+                        prose-p:text-gray-300 prose-p:leading-relaxed
+                        prose-table:text-xs prose-table:border-collapse prose-table:w-full
+                        prose-thead:bg-surface-hover/50
+                        prose-th:px-2 prose-th:py-1.5 prose-th:text-left prose-th:border prose-th:border-surface-border/50 prose-th:text-gray-400 prose-th:font-semibold
+                        prose-td:px-2 prose-td:py-1.5 prose-td:border prose-td:border-surface-border/50 prose-td:text-gray-300
+                        prose-li:text-gray-300 prose-li:leading-relaxed
+                        prose-blockquote:border-l-accent-gold prose-blockquote:bg-accent-gold/5 prose-blockquote:text-gray-400
+                        prose-hr:border-surface-border
+                        prose-code:text-accent-gold prose-code:bg-surface-hover prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs
+                        text-sm">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                      </div>
+                    ) : msg.streaming && (!msg.activities || msg.activities.length === 0) ? (
+                      <p className="text-xs text-gray-500">思考中…</p>
+                    ) : null}
+                    {msg.streaming && msg.content && <span className="inline-block w-1.5 h-3.5 bg-primary-400 animate-pulse align-middle ml-0.5" />}
                   </div>
                 ) : (
                   <p className="text-sm text-gray-200">{msg.content}</p>
@@ -327,21 +423,6 @@ export default function ChatPage() {
             </div>
           ))}
 
-          {loading && (
-            <div className="flex gap-3">
-              <div className="w-8 h-8 rounded-lg bg-primary-500/20 flex items-center justify-center">
-                <Bot className="w-4 h-4 text-primary-400 animate-pulse" />
-              </div>
-              <div className="bg-surface-card border border-surface-border rounded-xl px-4 py-3">
-                <p className="text-xs text-gray-500">AgentCore Runtime 处理中...</p>
-                <div className="flex gap-1 mt-1">
-                  <span className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                </div>
-              </div>
-            </div>
-          )}
           <div ref={messagesEndRef} />
         </div>
 
