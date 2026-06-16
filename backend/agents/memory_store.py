@@ -17,6 +17,8 @@ AgentCore Memory 集成 - 长期记忆 (LTM) + 短期事件 (STM)
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
+
 import boto3
 
 _PREF_NS = "/preferences/{actor}"
@@ -50,6 +52,7 @@ def record_turn(actor_id: str, session_id: str, user_text: str, assistant_text: 
             memoryId=mid,
             actorId=str(actor_id),
             sessionId=str(session_id)[:100],
+            eventTimestamp=datetime.now(timezone.utc),
             payload=payload,
         )
     except Exception as e:  # noqa: BLE001
