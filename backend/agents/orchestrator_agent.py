@@ -58,11 +58,27 @@ def _claude_config_dir() -> str:
     return d
 
 
-def _workspace_dir() -> str:
-    """Agent 的持久工作区 (EFS 上)。用户让 agent 创建的量化程序/项目/数据/报告落此处,
-    跨会话保留, 后续可继续之前的项目。与 skills 目录分开。"""
+def _workspace_root() -> str:
+    """全部 Agent 工作区的根 (EFS 上)。"""
     root = os.environ.get("AGENTCORE_SKILLS_ROOT", "").strip() or _BAKED_SKILLS_ROOT
     d = os.path.join(root, "workspace")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _safe_actor(actor_id: str) -> str:
+    """把 actor_id 规整成安全目录名 (仅字母数字/横线下划线)。"""
+    a = "".join(c if (c.isalnum() or c in "-_") else "-" for c in str(actor_id or "shared"))
+    return a[:64] or "shared"
+
+
+def _workspace_dir(actor_id: str = "shared") -> str:
+    """Agent 的持久工作区 (EFS 上, 按用户隔离)。用户让 agent 创建的量化程序/项目/数据/
+    报告等产出物落此处, 跨会话/跨容器持久保留, 后续可继续之前的项目。与 skills 目录分开。
+
+    布局: <skills_root>/workspace/<actor_id>/
+    """
+    d = os.path.join(_workspace_root(), _safe_actor(actor_id))
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -80,8 +96,19 @@ ORCHESTRATOR_SYSTEM_PROMPT = """你是一个**专注于金融/证券行业的通
 - **写代码并运行**: 用户要"创建量化交易程序/数据管道/回测框架/策略脚本"等, 你应当真的把代码
   写到工作区文件 (Write/Edit), 然后用 Bash 或 AgentCore Code Interpreter 运行、调试、迭代,
   直到产出可用结果, 并把关键代码和运行结果展示给用户。
-- **持久工作区**: 你有一个持久工作目录 (EFS, 跨会话保留)。把多文件项目 (策略代码、数据、报告)
-  组织在子目录里; 后续会话可以继续之前的项目。用 Glob/Grep/Read 浏览已有文件。
+
+## 产出物持久化 (硬性规则 — 必须遵守)
+- 你有一个**持久工作区目录 (EFS, 跨会话/容器永久保留)**:
+  `{workspace}`
+- **所有需要保留的产出物 (生成的代码、脚本、文档、报告、数据文件、图表等) 必须用 Write 工具
+  写到这个工作区目录 (或其下的子目录) 里**, 用绝对路径或相对路径均可 (相对路径也会落到这里)。
+- **严禁**把要保留的产出物只写到 `/tmp`、`~`、`/root`、`/home/...` 等临时/容器本地路径 ——
+  这些目录在容器回收后会丢失, 不是持久化。需要保留的一律写到上面的工作区。
+- **AgentCore Code Interpreter 的沙箱是远程临时环境**: 在里面跑出的代码/结果若要保留,
+  必须把最终代码和产物再用 Write 工具落到工作区 (沙箱内的文件不会自动持久化)。
+- 组织方式: 每个项目建一个子目录 (如 `{workspace}/<项目名>/`), 多文件项目 (策略代码、数据、
+  报告) 放在一起; 后续会话用 Glob/Grep/Read 浏览并继续之前的项目。
+- 产出文件后, 在回复里明确告诉用户**保存到了哪个路径**。
 - **多子 Agent 编排**: 复杂任务可拆解, 用 Agent 工具并行/串行委派给子 Agent (见下), 也可以为
   一次性的专门子任务即时定义角色。汇总各子 Agent 结果后给出整体结论。
 - **任务规划**: 多步骤任务先用 TodoWrite 列计划再逐步执行, 让用户看到进度。
@@ -234,10 +261,19 @@ def _build_options(session_id: str = "default", actor_id: str = "system") -> Cla
     若该 session 已存在历史则 resume 续接, 否则用固定 session_id 新建。
     """
     model_id = configure_bedrock_env()
-    project_cwd = resolve_skills_root()
+    # cwd 必须是 skills 根 (含 .claude/skills): setting_sources=["project"] 据此发现 skill。
+    skills_root = resolve_skills_root()
+    project_cwd = skills_root
+    # 该用户的持久工作区 (EFS): 产出物 (代码/文档/数据/报告) 落此处, 跨会话/容器持久。
+    # 通过 add_dirs 授予读写, 并在系统提示里用绝对路径强制 agent 把产出物写到这里。
+    workspace = _workspace_dir(actor_id)
 
-    # 动态注入"当前可用外部专业 Skill"列表, 引导 agent 优先使用
-    system_prompt = ORCHESTRATOR_SYSTEM_PROMPT.replace("{external_skills}", _external_skills_hint())
+    # 动态注入"当前可用外部专业 Skill"列表 + 工作区路径, 引导 agent 优先使用
+    system_prompt = (
+        ORCHESTRATOR_SYSTEM_PROMPT
+        .replace("{external_skills}", _external_skills_hint())
+        .replace("{workspace}", workspace)
+    )
 
     config_dir = _claude_config_dir()
     # 让本进程的 get_session_info() 也从 EFS 上的 config dir 解析 (与子进程一致)
@@ -271,13 +307,16 @@ def _build_options(session_id: str = "default", actor_id: str = "system") -> Cla
                       + ["Agent", "Task", "Bash", "Read", "Write", "Edit", "MultiEdit",
                          "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite", "NotebookEdit"],
         agents=build_subagents(),
-        cwd=project_cwd,
-        add_dirs=[_workspace_dir()],          # 持久工作区 (EFS), 跨会话保留用户的代码/项目
+        cwd=project_cwd,                      # = skills 根 (供 skill 发现)
+        add_dirs=[workspace],                # 用户持久工作区 (EFS): 产出物读写落此处
         setting_sources=["project"],
         skills="all",
         permission_mode="bypassPermissions",
         include_partial_messages=True,        # 逐 token 流式 (前端实时显示)
-        env={"CLAUDE_CONFIG_DIR": config_dir},  # 会话历史落 EFS, 跨容器持久
+        env={
+            "CLAUDE_CONFIG_DIR": config_dir,  # 会话历史落 EFS, 跨容器持久
+            "AGENT_WORKSPACE": workspace,     # 产出物持久化目录 (EFS), 供 agent/脚本引用
+        },
         # 浏览器快照/截图等 MCP 工具返回体很大, 默认 1MB stdout 缓冲会溢出 → 调到 32MB
         max_buffer_size=32 * 1024 * 1024,
     )

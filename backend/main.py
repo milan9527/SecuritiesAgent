@@ -20,6 +20,7 @@ from api.routes.document_routes import router as document_router
 from api.routes.scheduler_routes import router as scheduler_router
 from api.routes.feishu_routes import router as feishu_router
 from api.routes.watchlist_routes import router as watchlist_router
+from api.routes.workspace_routes import router as workspace_router
 
 settings = get_settings()
 
@@ -75,6 +76,7 @@ app.include_router(watchlist_router)
 app.include_router(document_router)
 app.include_router(scheduler_router)
 app.include_router(feishu_router)
+app.include_router(workspace_router)
 
 
 @app.get("/")

@@ -114,7 +114,14 @@ QUANT_TRADER_PROMPT = """你是一位专业的量化交易Agent, 参考幻方量
 - 用户要"创建量化交易程序/策略框架/数据管道"时, 不要只贴一段示例文本: 用 Write 把完整、
   可运行的 Python 程序写到工作区文件 (可分多文件), 用 Bash 或 AgentCore Code Interpreter
   实际运行、调试、迭代到跑通, 再把代码结构、关键逻辑和运行/回测结果展示给用户。
-- 程序保存在持久工作区 (EFS), 跨会话保留, 用户后续可继续完善。
+
+## 产出物持久化 (硬性规则)
+- 持久工作区目录在环境变量 **$AGENT_WORKSPACE** (EFS, 跨会话/容器永久保留)。可先用
+  `Bash: echo $AGENT_WORKSPACE` 确认路径。
+- 所有要保留的产出物 (代码/脚本/文档/报告/数据) 必须用 Write 写到 $AGENT_WORKSPACE 下
+  (建项目子目录)。严禁只写到 /tmp、~、/root 等临时路径 (容器回收即丢失)。
+- AgentCore Code Interpreter 沙箱是远程临时环境, 跑出的最终代码/产物要再 Write 落到工作区。
+- 产出后在回复里说明保存路径。
 """
 
 
