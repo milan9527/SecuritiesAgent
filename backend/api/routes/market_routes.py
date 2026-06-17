@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from fastapi import APIRouter, Depends, Query
 from db.models import User
 from api.auth import get_current_user
@@ -39,7 +40,7 @@ async def get_quote(
     if cached:
         return cached
 
-    quote = get_stock_realtime_quote(stock_code, source)
+    quote = await asyncio.to_thread(get_stock_realtime_quote, stock_code, source)
 
     if "error" not in quote:
         await cache_set(cache_key, quote, ttl=10)
@@ -55,7 +56,7 @@ async def get_batch_quotes(
 ):
     """批量获取股票行情"""
     code_list = [c.strip() for c in codes.split(",") if c.strip()]
-    results = get_stock_batch_quotes(code_list, source)
+    results = await asyncio.to_thread(get_stock_batch_quotes, code_list, source)
     return {"stocks": results, "source": source}
 
 
@@ -73,7 +74,7 @@ async def get_kline_data(
     if cached:
         return cached
 
-    kline = get_stock_kline(stock_code, period, count, source)
+    kline = await asyncio.to_thread(get_stock_kline, stock_code, period, count, source)
 
     if "error" not in kline:
         await cache_set(cache_key, kline, ttl=60)
@@ -87,7 +88,7 @@ async def search_stock(
     current_user: User = Depends(get_current_user),
 ):
     """搜索股票"""
-    results = search_stocks(keyword)
+    results = await asyncio.to_thread(search_stocks, keyword)
     return {"results": results}
 
 
@@ -98,7 +99,7 @@ async def get_indices(current_user: User = Depends(get_current_user)):
     cached = await cache_get(cache_key)
     if cached:
         return {"indices": cached}
-    indices = get_market_indices()
+    indices = await asyncio.to_thread(get_market_indices)
     await cache_set(cache_key, indices, ttl=15)
     return {"indices": indices}
 
@@ -109,5 +110,5 @@ async def get_orderbook(
     current_user: User = Depends(get_current_user),
 ):
     """获取股票买卖5档委托"""
-    data = get_stock_order_book(stock_code)
+    data = await asyncio.to_thread(get_stock_order_book, stock_code)
     return data

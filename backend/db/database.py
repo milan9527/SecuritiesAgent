@@ -12,8 +12,10 @@ engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.DEBUG,
     pool_size=20,
-    max_overflow=10,
+    max_overflow=20,
     pool_pre_ping=True,
+    pool_recycle=1800,   # 回收 30 分钟以上的连接, 避免使用被 Aurora 关闭的陈旧连接
+    pool_timeout=10,     # 拿不到连接最多等 10s 即报错, 不再拖到 30s 拖垮健康检查
 )
 
 AsyncSessionLocal = async_sessionmaker(
