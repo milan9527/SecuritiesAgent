@@ -520,6 +520,13 @@ async def invoke(payload: dict):
     user_id = payload.get("user_id", "anonymous")
     stream = bool(payload.get("stream", False))
 
+    # 应用 ECS 下发的全局 LLM 模型 / Max Tokens (Runtime 不读 Redis, 由 payload 携带)
+    try:
+        from agents.model_loader import apply_overrides
+        apply_overrides(payload.get("model_key"), payload.get("max_tokens"))
+    except Exception as e:  # noqa: BLE001
+        print(f"[Invoke] apply_overrides failed: {e}")
+
     if stream:
         # 流式: 返回 async generator → SSE。每个 yield 的 dict 被框架包成 `data: {...}\n\n`
         async def _gen():

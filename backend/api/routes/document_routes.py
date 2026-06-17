@@ -29,6 +29,7 @@ CATEGORY_DIRS = {
     "quant": "reports/quant",
     "market": "reports/market",
     "research": "reports/research",
+    "task": "reports/task",       # 工作任务: 定期任务 + AI 任务执行结果
     "imported": "imports",
     "general": "general",
 }
@@ -86,6 +87,7 @@ async def get_categories(current_user: User = Depends(get_current_user)):
         {"id": "quant", "name": "量化策略", "dir": "reports/quant"},
         {"id": "market", "name": "市场研究", "dir": "reports/market"},
         {"id": "research", "name": "深度研报", "dir": "reports/research"},
+        {"id": "task", "name": "工作任务", "dir": "reports/task"},
         {"id": "imported", "name": "导入文档", "dir": "imports"},
         {"id": "general", "name": "通用文档", "dir": "general"},
     ]}
@@ -423,7 +425,8 @@ async def search_knowledge_base(
             "max_tokens": 2000,
             "messages": [{"role": "user", "content": prompt}],
         })
-        resp = client.invoke_model(modelId=settings.LLM_MODEL_ID, body=body)
+        from agents.model_loader import get_active_model_id
+        resp = client.invoke_model(modelId=get_active_model_id(), body=body)
         resp_body = _json.loads(resp["body"].read())
         answer = resp_body.get("content", [{}])[0].get("text", "无法生成回答")
     except Exception as e:
@@ -478,7 +481,7 @@ async def reindex_knowledge_base(
 # ═══════════════════════════════════════════════════════
 
 # 文档自动归类: 候选类别 (与 /categories、CATEGORY_DIRS、前端保持一致)
-_DOC_CATEGORIES = ["analysis", "strategy", "quant", "market", "research", "imported", "general"]
+_DOC_CATEGORIES = ["analysis", "strategy", "quant", "market", "research", "task", "imported", "general"]
 # 关键词兜底 (LLM 不可用时用), 命中即归类
 _CATEGORY_KEYWORDS = {
     "quant": ["量化", "回测", "因子", "策略代码", "backtest", "sharpe", "夏普", "alpha"],
@@ -511,6 +514,7 @@ async def auto_categorize_document(title: str, content: str) -> str:
             "- quant (量化策略/回测/因子/策略代码)\n"
             "- market (大盘/行业/板块/宏观/市场复盘)\n"
             "- research (深度研报/调研纪要/白皮书)\n"
+            "- task (定期任务/AI任务的执行结果报告)\n"
             "- imported (外部导入的通用资料)\n"
             "- general (其他通用文档)\n\n"
             f"标题: {title}\n正文(节选): {snippet}\n\n类别ID:"
@@ -520,7 +524,8 @@ async def auto_categorize_document(title: str, content: str) -> str:
             "max_tokens": 10,
             "messages": [{"role": "user", "content": prompt}],
         })
-        resp = client.invoke_model(modelId=settings.LLM_MODEL_ID, body=body)
+        from agents.model_loader import get_active_model_id
+        resp = client.invoke_model(modelId=get_active_model_id(), body=body)
         text = json.loads(resp["body"].read()).get("content", [{}])[0].get("text", "")
         cat = (text or "").strip().lower()
         for c in _DOC_CATEGORIES:

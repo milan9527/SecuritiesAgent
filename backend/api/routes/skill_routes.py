@@ -434,7 +434,8 @@ allowed-tools: tool1 tool2
             "max_tokens": 2000,
             "messages": [{"role": "user", "content": prompt}],
         })
-        resp = client.invoke_model(modelId=_settings.LLM_MODEL_ID, body=body)
+        from agents.model_loader import get_active_model_id
+        resp = client.invoke_model(modelId=get_active_model_id(), body=body)
         content = _json.loads(resp["body"].read()).get("content", [{}])[0].get("text", "")
 
         # Extract name from generated content

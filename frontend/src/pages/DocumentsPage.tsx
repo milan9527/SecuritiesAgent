@@ -11,7 +11,9 @@ const CATEGORIES = [
   { id: 'quant', name: '量化策略', icon: '📈' },
   { id: 'market', name: '市场研究', icon: '🌐' },
   { id: 'research', name: '深度研报', icon: '📋' },
+  { id: 'task', name: '工作任务', icon: '⏰' },
   { id: 'imported', name: '导入文档', icon: '📥' },
+  { id: 'general', name: '通用文档', icon: '📄' },
 ]
 
 export default function DocumentsPage() {

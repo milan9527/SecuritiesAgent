@@ -15,6 +15,57 @@ from config.settings import get_settings
 settings = get_settings()
 
 # ═══════════════════════════════════════════════════════
+# 全局设置共享存储 (Redis) —— 让 LLM 模型 / Max Tokens 跨进程全局生效。
+# ECS (ENV=aws) 多个 task 共享同一 Redis; 设置写一次, 所有 task 的非Agent调用立即读到。
+# Runtime (ENV=local, 无 Redis) 不读 Redis: 模型/上限由 ECS 在调用 payload 里下发并应用。
+# ═══════════════════════════════════════════════════════
+_REDIS_ENABLED = settings.ENV.value == "aws"
+_MODEL_KEY_RK = "stcc:settings:llm_model_key"
+_MAX_TOKENS_RK = "stcc:settings:llm_max_tokens"
+_sync_redis = None
+_redis_dead = False
+
+
+def _redis():
+    """惰性创建同步 Redis 客户端 (仅 aws)。失败后本进程不再重试。"""
+    global _sync_redis, _redis_dead
+    if not _REDIS_ENABLED or _redis_dead:
+        return None
+    if _sync_redis is not None:
+        return _sync_redis
+    try:
+        import redis as _r
+        _sync_redis = _r.Redis(
+            host=settings.REDIS_HOST, port=settings.REDIS_PORT, db=settings.REDIS_DB,
+            password=settings.REDIS_PASSWORD or None, ssl=True,
+            decode_responses=True, socket_timeout=2, socket_connect_timeout=2,
+        )
+        return _sync_redis
+    except Exception:  # noqa: BLE001
+        _redis_dead = True
+        return None
+
+
+def _redis_get(key: str):
+    c = _redis()
+    if not c:
+        return None
+    try:
+        return c.get(key)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _redis_set(key: str, val: str):
+    c = _redis()
+    if not c:
+        return
+    try:
+        c.set(key, val)
+    except Exception:  # noqa: BLE001
+        pass
+
+# ═══════════════════════════════════════════════════════
 # Bedrock 可用模型列表 (Claude Agent SDK 通过 Bedrock 调用)
 # id 为 Bedrock inference profile ID
 # tier 决定 SDK 中 model="opus|sonnet|haiku" 的解析目标
@@ -96,35 +147,75 @@ AVAILABLE_MODELS = {
     },
 }
 
-# 当前活跃模型（运行时可切换）
+# 当前活跃模型 (运行时可切换)。本进程缓存; aws 下以 Redis 为权威源。
 _active_model_key: str = "claude-sonnet-4.6"
 _runtime_max_tokens: int = 0  # 0 = use settings default
+# Runtime 通过 apply_overrides 下发后置 True: 该进程以 payload 值为准, 不再读 Redis。
+_overridden: bool = False
 
 
 def get_active_model_key() -> str:
+    """全局活跃模型 key。aws: 优先读 Redis (跨 task/进程一致), 同步到本进程缓存。
+    若已被 payload override (Runtime), 则用本进程值。"""
+    global _active_model_key
+    if not _overridden:
+        val = _redis_get(_MODEL_KEY_RK)
+        if val and val in AVAILABLE_MODELS:
+            _active_model_key = val
     return _active_model_key
 
 
 def set_active_model_key(key: str) -> bool:
+    """切换全局活跃模型, 写入 Redis (aws) + 本进程缓存。"""
     global _active_model_key
-    if key in AVAILABLE_MODELS:
-        _active_model_key = key
-        return True
-    return False
+    if key not in AVAILABLE_MODELS:
+        return False
+    _active_model_key = key
+    _redis_set(_MODEL_KEY_RK, key)
+    return True
 
 
 def get_runtime_max_tokens() -> int:
+    """全局 Max Tokens。aws: 优先读 Redis。payload override 时用本进程值。"""
+    global _runtime_max_tokens
+    if not _overridden:
+        val = _redis_get(_MAX_TOKENS_RK)
+        if val:
+            try:
+                _runtime_max_tokens = int(val)
+            except (ValueError, TypeError):
+                pass
     return _runtime_max_tokens or settings.LLM_MAX_TOKENS
 
 
 def set_runtime_max_tokens(value: int):
+    """设置全局 Max Tokens, 写入 Redis (aws) + 本进程缓存。"""
     global _runtime_max_tokens
     _runtime_max_tokens = value
+    _redis_set(_MAX_TOKENS_RK, str(value))
+
+
+def apply_overrides(model_key: str | None = None, max_tokens: int | None = None):
+    """在 Runtime 进程内应用 ECS 下发的模型/上限。置 _overridden=True 后该进程
+    以这些值为准, 不再读 Redis (Runtime 无 Redis 连接)。"""
+    global _active_model_key, _runtime_max_tokens, _overridden
+    applied = False
+    if model_key and model_key in AVAILABLE_MODELS:
+        _active_model_key = model_key
+        applied = True
+    if max_tokens:
+        try:
+            _runtime_max_tokens = int(max_tokens)
+            applied = True
+        except (ValueError, TypeError):
+            pass
+    if applied:
+        _overridden = True
 
 
 def get_active_model_id(model_key: str | None = None) -> str:
-    """返回 Bedrock inference profile ID"""
-    key = model_key or _active_model_key
+    """返回 Bedrock inference profile ID (读全局活跃模型)"""
+    key = model_key or get_active_model_key()
     info = AVAILABLE_MODELS.get(key, AVAILABLE_MODELS["claude-sonnet-4.6"])
     return info["id"]
 
@@ -154,6 +245,7 @@ def configure_bedrock_env(model_key: str | None = None) -> str:
 
 def list_available_models() -> list[dict]:
     """列出所有可用模型"""
+    active = get_active_model_key()
     result = []
     for key, info in AVAILABLE_MODELS.items():
         result.append({
@@ -164,6 +256,6 @@ def list_available_models() -> list[dict]:
             "description": info["description"],
             "context_window": info.get("context_window", ""),
             "max_output": info.get("max_output", ""),
-            "is_active": key == _active_model_key,
+            "is_active": key == active,
         })
     return result

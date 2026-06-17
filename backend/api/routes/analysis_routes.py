@@ -288,7 +288,7 @@ async def agent_analysis(
                     doc = Document(
                         user_id=user_id,
                         title=f"AI深度分析: {request.stock_name or request.sector or '市场分析'}",
-                        category="analysis",
+                        category="task",
                         content=html_response,
                         file_type="html",
                         file_size=len(html_response.encode("utf-8")),

@@ -221,7 +221,7 @@ async def _execute_task(task_id: str):
             doc = Document(
                 user_id=user.id,
                 title=f"[定期任务] {task.name} - {datetime.utcnow().strftime('%Y-%m-%d')}",
-                category="scheduler",
+                category="task",
                 content=response,
                 file_type="md",
                 file_size=len(response.encode("utf-8")),

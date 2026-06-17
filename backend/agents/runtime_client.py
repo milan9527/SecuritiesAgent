@@ -109,6 +109,16 @@ def stream_runtime_agent(prompt: str, session_id: str = "default", user_id: str 
             yield {"type": "error", "message": msg[:300]}
 
 
+def _global_llm_overrides() -> dict:
+    """从 ECS 端的全局设置 (Redis) 读出当前模型/上限, 随 payload 下发给 Runtime,
+    使模型/Max Tokens 切换对 Runtime Agent 也全局生效 (Runtime 自身不读 Redis)。"""
+    try:
+        from agents.model_loader import get_active_model_key, get_runtime_max_tokens
+        return {"model_key": get_active_model_key(), "max_tokens": get_runtime_max_tokens()}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def _stream_local(prompt: str, session_id: str, user_id: str):
     """进程内 SDK 编排器流式 (本地/Runtime 不可用时回退)。把 async generator 抽成同步。"""
     import asyncio
@@ -140,6 +150,7 @@ def _stream_runtime(agent_arn: str, prompt: str, session_id: str, user_id: str):
 
     payload = json.dumps({
         "prompt": prompt, "session_id": session_id, "user_id": user_id, "stream": True,
+        **_global_llm_overrides(),
     })
     response = client.invoke_agent_runtime(
         agentRuntimeArn=agent_arn,
@@ -195,6 +206,7 @@ def _invoke_runtime(agent_arn: str, prompt: str, session_id: str, user_id: str) 
         "prompt": prompt,
         "session_id": session_id,
         "user_id": user_id,
+        **_global_llm_overrides(),
     })
 
     response = client.invoke_agent_runtime(

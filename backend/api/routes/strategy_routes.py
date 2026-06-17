@@ -414,7 +414,7 @@ async def agent_strategy(
                 doc = Document(
                     user_id=user_id,
                     title=f"[{'交易策略' if request.module == 'trading' else '量化分析'}] {request.prompt[:60]}",
-                    category="strategy" if request.module == "trading" else "quant",
+                    category="task",
                     content=response_text,
                     file_type="md",
                     file_size=len(response_text.encode("utf-8")),

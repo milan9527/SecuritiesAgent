@@ -126,38 +126,38 @@ export default function SettingsPage() {
           <Cpu className="w-5 h-5 text-blue-400" />
           LLM 模型
         </h2>
-        <p className="text-xs text-gray-500 mb-4">选择Agent使用的大语言模型，默认使用 Bedrock Claude Sonnet 4.6</p>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {models.map((m: any) => (
-            <button
-              key={m.key}
-              onClick={() => handleSwitchModel(m.key)}
-              disabled={switching || m.key === activeModel}
-              className={`text-left p-4 rounded-lg border transition-all ${
-                m.key === activeModel
-                  ? 'bg-primary-500/20 border-primary-500/50'
-                  : 'bg-surface-hover border-surface-border hover:border-primary-500/30'
-              }`}
+        <p className="text-xs text-gray-500 mb-4">选择 Agent 及全平台 LLM 调用使用的模型，设置全局生效（所有后端实例与 Agent Runtime）。</p>
+        <div className="max-w-xl">
+          <label className="block text-xs text-gray-500 mb-1.5">当前模型</label>
+          <div className="relative">
+            <select
+              value={activeModel}
+              disabled={switching}
+              onChange={(e) => handleSwitchModel(e.target.value)}
+              className="input-field appearance-none pr-9 cursor-pointer disabled:opacity-60"
             >
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-sm font-medium text-white">{m.name}</p>
-                  <p className="text-xs text-gray-500 mt-0.5">{m.provider}</p>
+              {models.map((m: any) => (
+                <option key={m.key} value={m.key} className="bg-surface-dark text-gray-100">
+                  {m.name} · {m.provider} (CTX {m.context_window} / OUT {m.max_output})
+                </option>
+              ))}
+            </select>
+            <Cpu className="w-4 h-4 text-gray-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          </div>
+          {(() => {
+            const cur = models.find((m: any) => m.key === activeModel)
+            return cur ? (
+              <div className="mt-3 p-3 rounded-lg bg-surface-hover border border-surface-border">
+                <div className="flex items-center gap-2">
+                  <Check className="w-3.5 h-3.5 text-green-400" />
+                  <span className="text-sm font-medium text-white">{cur.name}</span>
+                  <span className="text-[10px] px-1.5 py-0.5 bg-surface-dark rounded text-gray-500">{cur.provider}</span>
                 </div>
-                {m.key === activeModel && (
-                  <div className="p-1 bg-primary-500 rounded-full">
-                    <Check className="w-3 h-3 text-white" />
-                  </div>
-                )}
+                <p className="text-[11px] text-gray-500 mt-1.5">{cur.description}</p>
+                <p className="text-[9px] text-gray-700 font-mono mt-1">{cur.id}</p>
               </div>
-              <p className="text-[10px] text-gray-600 mt-2">{m.description}</p>
-              <div className="flex gap-2 mt-1.5">
-                {m.context_window && <span className="text-[9px] px-1.5 py-0.5 bg-surface-dark rounded text-gray-500">CTX {m.context_window}</span>}
-                {m.max_output && <span className="text-[9px] px-1.5 py-0.5 bg-surface-dark rounded text-gray-500">OUT {m.max_output}</span>}
-              </div>
-              <p className="text-[9px] text-gray-700 font-mono mt-1">{m.id}</p>
-            </button>
-          ))}
+            ) : null
+          })()}
         </div>
       </div>
 
