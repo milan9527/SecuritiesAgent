@@ -73,10 +73,14 @@ async def build_user_context(user: User, db: AsyncSession, message: str = "") ->
                 items_result = await db.execute(
                     select(WatchlistItem).where(WatchlistItem.watchlist_id == default_wl.id)
                 )
-                items = items_result.scalars().all()
-                if items:
-                    stock_list = ", ".join([f"{i.stock_name}({i.stock_code})" for i in items])
-                    parts.append(f"[自选股池: {stock_list}]")
+                all_items = items_result.scalars().all()
+                # 分析股票池 (analysis) 用于研究分析; 实际交易股票 (trading) 单列说明
+                analysis = [i for i in all_items if (getattr(i, "pool_type", "analysis") or "analysis") == "analysis"]
+                trading = [i for i in all_items if (getattr(i, "pool_type", "analysis") or "analysis") == "trading"]
+                if analysis:
+                    parts.append("[自选股池(分析): " + ", ".join(f"{i.stock_name}({i.stock_code})" for i in analysis) + "]")
+                if trading:
+                    parts.append("[实际交易持有: " + ", ".join(f"{i.stock_name}({i.stock_code})" for i in trading) + "]")
         except Exception as e:
             print(f"[UserContext] Failed to get watchlist for {user.username}: {e}")
 

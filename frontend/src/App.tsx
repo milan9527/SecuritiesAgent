@@ -15,6 +15,7 @@ import SettingsPage from './pages/SettingsPage'
 import DocumentsPage from './pages/DocumentsPage'
 import SchedulerPage from './pages/SchedulerPage'
 import WorkspacePage from './pages/WorkspacePage'
+import WatchlistPage from './pages/WatchlistPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
@@ -42,6 +43,7 @@ export default function App() {
                   <Route path="/" element={<DashboardPage />} />
                   <Route path="/analysis" element={<AnalysisPage />} />
                   <Route path="/market" element={<MarketPage />} />
+                  <Route path="/watchlist" element={<WatchlistPage />} />
                   <Route path="/portfolio" element={<PortfolioPage />} />
                   <Route path="/strategy" element={<StrategyPage />} />
                   <Route path="/quant" element={<QuantPage />} />

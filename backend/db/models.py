@@ -137,6 +137,9 @@ class WatchlistItem(Base):
     watchlist_id = Column(UUID(as_uuid=True), ForeignKey("watchlists.id"), nullable=False)
     stock_code = Column(String(10), nullable=False)
     stock_name = Column(String(50), default="")
+    # 股票池类型: analysis=分析股票池, trading=实际交易股票。
+    # (模拟盘/量化为独立模块, 不在此表; 自选股页统一展示这4类)
+    pool_type = Column(String(20), default="analysis", nullable=False)
     added_reason = Column(Text, default="")  # 加入原因/投资分析摘要
     target_price = Column(Float, nullable=True)
     stop_loss_price = Column(Float, nullable=True)
@@ -145,7 +148,8 @@ class WatchlistItem(Base):
     watchlist = relationship("Watchlist", back_populates="items")
 
     __table_args__ = (
-        UniqueConstraint("watchlist_id", "stock_code", name="uq_watchlist_stock"),
+        # 同一股票可同时在分析池和交易池, 故 pool_type 纳入唯一约束
+        UniqueConstraint("watchlist_id", "stock_code", "pool_type", name="uq_watchlist_stock_pool"),
     )
 
 

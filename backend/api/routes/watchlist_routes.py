@@ -26,6 +26,13 @@ def _valid_uuid(value: str) -> bool:
 
 router = APIRouter(prefix="/api/watchlist", tags=["自选股"])
 
+# 自选股表内分池 (模拟盘/量化为独立模块, 在 /pools 里聚合展示)
+_WL_POOLS = {"analysis": "分析股票池", "trading": "实际交易股票"}
+
+
+def _norm_pool(p: str) -> str:
+    return p if p in _WL_POOLS else "analysis"
+
 
 class AddItemRequest(BaseModel):
     stock_code: str
@@ -33,6 +40,7 @@ class AddItemRequest(BaseModel):
     added_reason: str = ""
     target_price: Optional[float] = None
     stop_loss_price: Optional[float] = None
+    pool_type: str = "analysis"   # analysis | trading
 
 
 class CreateWatchlistRequest(BaseModel):
@@ -66,6 +74,7 @@ async def get_watchlists(
                 "id": str(it.id),
                 "stock_code": it.stock_code,
                 "stock_name": it.stock_name,
+                "pool_type": getattr(it, "pool_type", "analysis") or "analysis",
                 "added_reason": it.added_reason,
                 "target_price": it.target_price,
                 "stop_loss_price": it.stop_loss_price,
@@ -74,6 +83,75 @@ async def get_watchlists(
             "count": len(items),
         })
     return {"watchlists": out}
+
+
+@router.get("/pools")
+async def get_pools(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """自选股模块统一视图: 4 个股票池
+    - analysis 分析股票池 / trading 实际交易股票 (本表 watchlist_items, 按 pool_type)
+    - simulated 模拟盘 (Portfolio.positions) / quant 量化交易 (QuantStrategy)
+    默认自选股 = analysis + trading。"""
+    from db.models import Portfolio, Position, QuantStrategy
+
+    pools: dict = {}
+
+    # analysis / trading —— 来自默认自选股表
+    wl = await _get_or_create_default_watchlist(current_user, db)
+    items_res = await db.execute(select(WatchlistItem).where(WatchlistItem.watchlist_id == wl.id))
+    by_pool: dict = {"analysis": [], "trading": []}
+    for it in items_res.scalars().all():
+        pt = _norm_pool(getattr(it, "pool_type", "analysis"))
+        by_pool.setdefault(pt, []).append({
+            "id": str(it.id), "stock_code": it.stock_code, "stock_name": it.stock_name,
+            "added_reason": it.added_reason, "target_price": it.target_price,
+            "stop_loss_price": it.stop_loss_price,
+            "added_at": it.added_at.isoformat() if it.added_at else "",
+        })
+    pools["analysis"] = {"name": "分析股票池", "kind": "watchlist", "items": by_pool["analysis"]}
+    pools["trading"] = {"name": "实际交易股票", "kind": "watchlist", "items": by_pool["trading"]}
+
+    # simulated —— 模拟盘持仓
+    sim_items = []
+    port_res = await db.execute(
+        select(Portfolio).where(Portfolio.user_id == current_user.id, Portfolio.is_active == True).limit(1)
+    )
+    portfolio = port_res.scalar_one_or_none()
+    if not portfolio:
+        any_p = await db.execute(select(Portfolio).where(Portfolio.user_id == current_user.id).limit(1))
+        portfolio = any_p.scalar_one_or_none()
+    if portfolio:
+        pos_res = await db.execute(select(Position).where(Position.portfolio_id == portfolio.id))
+        for p in pos_res.scalars().all():
+            sim_items.append({
+                "stock_code": p.stock_code, "stock_name": p.stock_name,
+                "quantity": p.quantity, "avg_cost": p.avg_cost,
+                "current_price": p.current_price, "market_value": p.market_value,
+                "profit": p.profit, "profit_pct": p.profit_pct,
+            })
+    pools["simulated"] = {
+        "name": "模拟盘", "kind": "portfolio",
+        "portfolio": ({"name": portfolio.name, "total_value": portfolio.total_value,
+                       "available_cash": portfolio.available_cash,
+                       "total_profit_pct": portfolio.total_profit_pct} if portfolio else None),
+        "items": sim_items,
+    }
+
+    # quant —— 量化策略
+    q_items = []
+    q_res = await db.execute(select(QuantStrategy).where(QuantStrategy.user_id == current_user.id))
+    for s in q_res.scalars().all():
+        q_items.append({
+            "id": str(s.id), "name": s.name, "description": (s.description or "")[:120],
+            "template_name": s.template_name,
+            "status": s.status.value if hasattr(s.status, "value") else str(s.status),
+            "performance_metrics": s.performance_metrics or {},
+        })
+    pools["quant"] = {"name": "量化交易", "kind": "quant", "items": q_items}
+
+    return {"pools": pools, "order": ["analysis", "trading", "simulated", "quant"]}
 
 
 @router.post("/")
@@ -105,6 +183,7 @@ class _InternalAddItem(BaseModel):
     added_reason: str = ""
     target_price: Optional[float] = None
     stop_loss_price: Optional[float] = None
+    pool_type: str = "analysis"   # analysis | trading
 
 
 async def _get_or_create_default_watchlist(user: User, db: AsyncSession) -> Watchlist:
@@ -130,11 +209,13 @@ async def internal_add_stock(req: _InternalAddItem, db: AsyncSession = Depends(g
     """Agent 调用: 把选出的股票加入该用户的默认自选股池 (已存在则更新理由/目标价, 幂等)。"""
     user = await resolve_internal_actor(req.token, req.actor_id, db)
     wl = await _get_or_create_default_watchlist(user, db)
+    pool = _norm_pool(req.pool_type)
 
     existing = await db.execute(
         select(WatchlistItem).where(
             WatchlistItem.watchlist_id == wl.id,
             WatchlistItem.stock_code == req.stock_code,
+            WatchlistItem.pool_type == pool,
         )
     )
     item = existing.scalar_one_or_none()
@@ -148,15 +229,15 @@ async def internal_add_stock(req: _InternalAddItem, db: AsyncSession = Depends(g
         if req.stop_loss_price is not None:
             item.stop_loss_price = req.stop_loss_price
         await db.commit()
-        return {"status": "updated", "stock_code": req.stock_code, "watchlist": wl.name}
+        return {"status": "updated", "stock_code": req.stock_code, "pool_type": pool, "watchlist": wl.name}
 
     item = WatchlistItem(
-        watchlist_id=wl.id, stock_code=req.stock_code, stock_name=req.stock_name,
+        watchlist_id=wl.id, stock_code=req.stock_code, stock_name=req.stock_name, pool_type=pool,
         added_reason=req.added_reason, target_price=req.target_price, stop_loss_price=req.stop_loss_price,
     )
     db.add(item)
     await db.commit()
-    return {"status": "added", "stock_code": req.stock_code, "watchlist": wl.name}
+    return {"status": "added", "stock_code": req.stock_code, "pool_type": pool, "watchlist": wl.name}
 
 
 @router.post("/{watchlist_id}/add")
@@ -176,52 +257,58 @@ async def add_stock(
     if not wl:
         raise HTTPException(status_code=404, detail="自选列表不存在")
 
-    # 检查是否已存在
+    pool = _norm_pool(request.pool_type)
+    # 检查是否已存在 (同股票同池)
     existing = await db.execute(
         select(WatchlistItem).where(
             WatchlistItem.watchlist_id == wl.id,
             WatchlistItem.stock_code == request.stock_code,
+            WatchlistItem.pool_type == pool,
         )
     )
     if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="该股票已在自选中")
+        raise HTTPException(status_code=400, detail=f"该股票已在{_WL_POOLS[pool]}中")
 
     item = WatchlistItem(
         watchlist_id=wl.id,
         stock_code=request.stock_code,
         stock_name=request.stock_name,
+        pool_type=pool,
         added_reason=request.added_reason,
         target_price=request.target_price,
         stop_loss_price=request.stop_loss_price,
     )
     db.add(item)
     await db.commit()
-    return {"message": f"{request.stock_name or request.stock_code} 已加入自选"}
+    return {"message": f"{request.stock_name or request.stock_code} 已加入{_WL_POOLS[pool]}", "pool_type": pool}
 
 
 @router.delete("/{watchlist_id}/remove/{stock_code}")
 async def remove_stock(
     watchlist_id: str,
     stock_code: str,
+    pool_type: str = "",
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """从自选中移除股票"""
+    """从自选中移除股票 (可指定 pool_type, 不指定则移除该股票在所有池的记录)"""
     if not _valid_uuid(watchlist_id):
         raise HTTPException(status_code=404, detail="未找到该股票")
-    result = await db.execute(
-        select(WatchlistItem).join(Watchlist).where(
-            WatchlistItem.watchlist_id == watchlist_id,
-            WatchlistItem.stock_code == stock_code,
-            Watchlist.user_id == current_user.id,
-        )
-    )
-    item = result.scalar_one_or_none()
-    if not item:
+    conds = [
+        WatchlistItem.watchlist_id == watchlist_id,
+        WatchlistItem.stock_code == stock_code,
+        Watchlist.user_id == current_user.id,
+    ]
+    if pool_type:
+        conds.append(WatchlistItem.pool_type == _norm_pool(pool_type))
+    result = await db.execute(select(WatchlistItem).join(Watchlist).where(*conds))
+    items = result.scalars().all()
+    if not items:
         raise HTTPException(status_code=404, detail="未找到该股票")
-    await db.delete(item)
+    for it in items:
+        await db.delete(it)
     await db.commit()
-    return {"message": f"{stock_code} 已从自选移除"}
+    return {"message": f"{stock_code} 已移除"}
 
 
 @router.get("/search-suggest")

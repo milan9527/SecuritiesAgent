@@ -314,9 +314,11 @@ async def save_quant_strategy(args: dict[str, Any]) -> dict[str, Any]:
 
 
 @tool("add_to_watchlist",
-      "把一只股票加入用户的【自选股池】(默认股票池)。当你为用户选股/推荐了值得关注的股票时, 调用此工具把它加入自选股, 附上理由/目标价/止损价。",
+      "把一只股票加入用户的【自选股】。pool_type 指定股票池: 'analysis'=分析股票池(默认, 用于研究/关注), "
+      "'trading'=实际交易股票(用户真实持有/计划交易的)。为用户选股/推荐值得关注的标的→analysis; "
+      "确认用户实际买入/持有的标的→trading。附理由/目标价/止损价。",
       {"stock_code": str, "stock_name": str, "added_reason": str,
-       "target_price": float, "stop_loss_price": float})
+       "target_price": float, "stop_loss_price": float, "pool_type": str})
 async def add_to_watchlist(args: dict[str, Any]) -> dict[str, Any]:
     return await _run(_persist, path="/api/watchlist/internal/add", payload={
         "stock_code": args["stock_code"],
@@ -324,6 +326,7 @@ async def add_to_watchlist(args: dict[str, Any]) -> dict[str, Any]:
         "added_reason": args.get("added_reason", ""),
         "target_price": args.get("target_price"),
         "stop_loss_price": args.get("stop_loss_price"),
+        "pool_type": args.get("pool_type", "analysis"),
     })
 
 

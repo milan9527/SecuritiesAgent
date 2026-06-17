@@ -278,7 +278,12 @@ async def _build_task_prompt(task: ScheduledTask, user: User, db) -> str:
             items_result = await db.execute(
                 select(WatchlistItem).where(WatchlistItem.watchlist_id == wl.id)
             )
-            items = items_result.scalars().all()
+            all_items = items_result.scalars().all()
+            # 分析股票池用于定期分析; 实际交易持有单列
+            items = [i for i in all_items if (getattr(i, "pool_type", "analysis") or "analysis") == "analysis"]
+            trading = [i for i in all_items if (getattr(i, "pool_type", "analysis") or "analysis") == "trading"]
+            if trading:
+                parts.append("[实际交易持有: " + ", ".join(f"{i.stock_name}({i.stock_code})" for i in trading) + "]")
             if items:
                 stock_list = ", ".join([f"{i.stock_name}({i.stock_code})" for i in items])
                 parts.append(f"[自选股池 (共{len(items)}只, 必须全部覆盖): {stock_list}]")

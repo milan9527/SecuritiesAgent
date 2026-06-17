@@ -58,3 +58,21 @@ async def init_db():
             ))
         except Exception:
             pass
+        # 自选股分池: watchlist_items.pool_type (analysis|trading) + 唯一约束改为含 pool_type
+        try:
+            await conn.execute(text(
+                "ALTER TABLE watchlist_items ADD COLUMN IF NOT EXISTS pool_type VARCHAR(20) DEFAULT 'analysis' NOT NULL"
+            ))
+        except Exception:
+            pass
+        try:
+            await conn.execute(text("ALTER TABLE watchlist_items DROP CONSTRAINT IF EXISTS uq_watchlist_stock"))
+        except Exception:
+            pass
+        try:
+            await conn.execute(text(
+                "ALTER TABLE watchlist_items ADD CONSTRAINT uq_watchlist_stock_pool "
+                "UNIQUE (watchlist_id, stock_code, pool_type)"
+            ))
+        except Exception:
+            pass

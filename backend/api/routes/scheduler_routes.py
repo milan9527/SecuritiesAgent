@@ -241,7 +241,11 @@ async def run_task_now(
                 items_result = await db.execute(
                     select(WatchlistItem).where(WatchlistItem.watchlist_id == default_wl.id)
                 )
-                items = items_result.scalars().all()
+                all_items = items_result.scalars().all()
+                items = [i for i in all_items if (getattr(i, "pool_type", "analysis") or "analysis") == "analysis"]
+                trading = [i for i in all_items if (getattr(i, "pool_type", "analysis") or "analysis") == "trading"]
+                if trading:
+                    task_prompt += "[实际交易持有: " + ", ".join(f"{i.stock_name}({i.stock_code})" for i in trading) + "]\n"
                 if items:
                     stock_list_str = ", ".join([f"{i.stock_name}({i.stock_code})" for i in items])
                     task_prompt += f"[自选股池 (共{len(items)}只, 必须全部覆盖): {stock_list_str}]\n"
