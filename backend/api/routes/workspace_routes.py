@@ -20,6 +20,38 @@ _TEXT_EXTS = {".py", ".md", ".txt", ".json", ".csv", ".yaml", ".yml", ".html", "
               ".ts", ".sh", ".ipynb", ".log", ".sql", ".toml", ".ini", ".tsv"}
 _MAX_TEXT_BYTES = 2 * 1024 * 1024  # 2MB 文本预览上限
 
+# 工作区一级类型目录 (与 orchestrator 系统提示一致)
+_TYPE_DIRS = ["code", "documents", "data", "skills"]
+# 类型 → 中文名 (前端分组用)
+WORKSPACE_CATEGORIES = {
+    "code": "代码/脚本",
+    "documents": "文档/报告",
+    "data": "数据文件",
+    "skills": "Skill",
+    "general": "其他",
+}
+# 按扩展名兜底归类 (文件不在类型目录下时)
+_CODE_EXTS = {".py", ".js", ".ts", ".sh", ".sql", ".ipynb", ".java", ".go", ".rs", ".c", ".cpp", ".rb"}
+_DATA_EXTS = {".csv", ".json", ".tsv", ".xlsx", ".parquet", ".xml", ".yaml", ".yml"}
+_DOC_EXTS = {".md", ".txt", ".html", ".pdf", ".doc", ".docx"}
+
+
+def _categorize(rel_path: str, ext: str) -> str:
+    """按一级目录归类, 否则按扩展名兜底。"""
+    top = rel_path.replace("\\", "/").split("/", 1)[0].lower()
+    if top in _TYPE_DIRS:
+        return top
+    if ext in _CODE_EXTS:
+        return "code"
+    if ext in _DATA_EXTS:
+        return "data"
+    if ext in _DOC_EXTS:
+        return "documents"
+    # 含 SKILL.md 的目录视为 skill
+    if rel_path.upper().endswith("SKILL.MD"):
+        return "skills"
+    return "general"
+
 
 def _safe_actor(actor_id: str) -> str:
     a = "".join(c if (c.isalnum() or c in "-_") else "-" for c in str(actor_id or "shared"))
@@ -56,14 +88,22 @@ async def list_files(current_user: User = Depends(get_current_user)):
                 st = os.stat(fp)
             except OSError:
                 continue
+            rel = os.path.relpath(fp, base)
+            ext = os.path.splitext(n)[1].lower()
             files.append({
-                "path": os.path.relpath(fp, base),
+                "path": rel,
                 "size": st.st_size,
                 "modified_at": int(st.st_mtime),
-                "ext": os.path.splitext(n)[1].lower(),
+                "ext": ext,
+                "category": _categorize(rel, ext),
             })
     files.sort(key=lambda f: f["modified_at"], reverse=True)
-    return {"root": "workspace", "count": len(files), "files": files}
+    # 各类别计数 (前端分组展示用)
+    cat_counts: dict[str, int] = {}
+    for f in files:
+        cat_counts[f["category"]] = cat_counts.get(f["category"], 0) + 1
+    return {"root": "workspace", "count": len(files), "files": files,
+            "categories": WORKSPACE_CATEGORIES, "category_counts": cat_counts}
 
 
 @router.get("/file")

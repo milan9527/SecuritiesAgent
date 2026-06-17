@@ -5,7 +5,10 @@ import remarkGfm from 'remark-gfm'
 import api from '../services/api'
 import toast from 'react-hot-toast'
 
-interface WsFile { path: string; size: number; modified_at: number; ext: string }
+interface WsFile { path: string; size: number; modified_at: number; ext: string; category: string }
+
+const CAT_ICON: Record<string, string> = { code: '💻', documents: '📄', data: '🗃️', skills: '🧩', general: '📁' }
+const CAT_ORDER = ['code', 'documents', 'data', 'skills', 'general']
 
 const TEXT_EXTS = ['.py', '.md', '.txt', '.json', '.csv', '.yaml', '.yml', '.html', '.js', '.ts', '.sh', '.ipynb', '.log', '.sql', '.toml', '.ini', '.tsv']
 const CODE_EXTS = ['.py', '.js', '.ts', '.sh', '.sql', '.json', '.yaml', '.yml', '.toml', '.ini', '.html', '.csv', '.tsv', '.log']
@@ -26,6 +29,8 @@ function iconFor(ext: string) {
 
 export default function WorkspacePage() {
   const [files, setFiles] = useState<WsFile[]>([])
+  const [catNames, setCatNames] = useState<Record<string, string>>({})
+  const [activeCat, setActiveCat] = useState<string>('')   // '' = 全部
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<WsFile | null>(null)
   const [content, setContent] = useState('')
@@ -41,6 +46,7 @@ export default function WorkspacePage() {
     try {
       const res = await api.get('/api/workspace/files')
       setFiles(res.data.files || [])
+      setCatNames(res.data.categories || {})
     } catch (err: any) {
       toast.error(err.response?.data?.error || '加载失败')
     }
@@ -96,6 +102,15 @@ export default function WorkspacePage() {
   const isMarkdown = selected?.ext === '.md'
   const isText = selected && TEXT_EXTS.includes(selected.ext)
 
+  // 按类别分组 (受 activeCat 过滤); 维持 CAT_ORDER 顺序
+  const shown = activeCat ? files.filter(f => f.category === activeCat) : files
+  const counts: Record<string, number> = {}
+  files.forEach(f => { counts[f.category] = (counts[f.category] || 0) + 1 })
+  const presentCats = CAT_ORDER.filter(c => counts[c] > 0)
+  const grouped: { cat: string; items: WsFile[] }[] = presentCats
+    .map(c => ({ cat: c, items: shown.filter(f => f.category === c) }))
+    .filter(g => g.items.length > 0)
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -109,11 +124,22 @@ export default function WorkspacePage() {
       </div>
 
       <div className="grid grid-cols-12 gap-4" style={{ height: 'calc(100vh - 10rem)' }}>
-        {/* File list */}
+        {/* File list (按类别分组) */}
         <div className="col-span-4 card overflow-y-auto p-0">
-          <div className="px-4 py-3 border-b border-surface-border sticky top-0 bg-surface-card z-10">
-            <p className="text-sm text-gray-400">{files.length} 个文件</p>
+          {/* 类别筛选 */}
+          <div className="px-3 py-2.5 border-b border-surface-border sticky top-0 bg-surface-card z-10 flex flex-wrap gap-1.5">
+            <button onClick={() => setActiveCat('')}
+              className={`px-2 py-1 rounded-md text-[11px] ${activeCat === '' ? 'bg-primary-500/20 text-primary-300 border border-primary-500/30' : 'text-gray-500 border border-surface-border hover:text-gray-300'}`}>
+              全部 {files.length}
+            </button>
+            {presentCats.map(c => (
+              <button key={c} onClick={() => setActiveCat(c)}
+                className={`px-2 py-1 rounded-md text-[11px] ${activeCat === c ? 'bg-primary-500/20 text-primary-300 border border-primary-500/30' : 'text-gray-500 border border-surface-border hover:text-gray-300'}`}>
+                {CAT_ICON[c] || '📁'} {catNames[c] || c} {counts[c]}
+              </button>
+            ))}
           </div>
+
           {files.length === 0 && !loading && (
             <div className="flex flex-col items-center justify-center py-16 text-center">
               <FolderOpen className="w-10 h-10 text-gray-700 mb-2" />
@@ -121,33 +147,43 @@ export default function WorkspacePage() {
               <p className="text-xs text-gray-700 mt-1">AI 助手生成的代码/报告会保存在这里</p>
             </div>
           )}
-          <div className="divide-y divide-surface-border/40">
-            {files.map((f) => {
-              const Icon = iconFor(f.ext)
-              const active = selected?.path === f.path
-              return (
-                <div key={f.path} onClick={() => openFile(f)}
-                  className={`group px-4 py-3 cursor-pointer transition-colors ${active ? 'bg-primary-500/10' : 'hover:bg-surface-hover/40'}`}>
-                  <div className="flex items-center gap-2">
-                    <Icon className={`w-4 h-4 flex-shrink-0 ${active ? 'text-primary-300' : 'text-gray-500'}`} />
-                    <span className={`text-sm truncate flex-1 ${active ? 'text-primary-200' : 'text-gray-300'}`}>{f.path}</span>
-                    <button onClick={(e) => { e.stopPropagation(); download(f) }}
-                      className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-accent-gold transition-all" title="下载">
-                      <Download className="w-3.5 h-3.5" />
-                    </button>
-                    <button onClick={(e) => remove(f, e)}
-                      className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-red-400 transition-all" title="删除">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-2 mt-1 ml-6">
-                    <span className="text-[10px] text-gray-600">{fmtSize(f.size)}</span>
-                    <span className="text-[10px] text-gray-700">· {fmtTime(f.modified_at)}</span>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
+
+          {grouped.map(({ cat, items }) => (
+            <div key={cat}>
+              <div className="px-4 py-1.5 bg-surface-dark/60 border-b border-surface-border/40 sticky top-[41px] z-[5]">
+                <p className="text-[11px] font-medium text-gray-400">
+                  {CAT_ICON[cat] || '📁'} {catNames[cat] || cat} · {items.length}
+                </p>
+              </div>
+              <div className="divide-y divide-surface-border/40">
+                {items.map((f) => {
+                  const Icon = iconFor(f.ext)
+                  const active = selected?.path === f.path
+                  return (
+                    <div key={f.path} onClick={() => openFile(f)}
+                      className={`group px-4 py-3 cursor-pointer transition-colors ${active ? 'bg-primary-500/10' : 'hover:bg-surface-hover/40'}`}>
+                      <div className="flex items-center gap-2">
+                        <Icon className={`w-4 h-4 flex-shrink-0 ${active ? 'text-primary-300' : 'text-gray-500'}`} />
+                        <span className={`text-sm truncate flex-1 ${active ? 'text-primary-200' : 'text-gray-300'}`}>{f.path}</span>
+                        <button onClick={(e) => { e.stopPropagation(); download(f) }}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-accent-gold transition-all" title="下载">
+                          <Download className="w-3.5 h-3.5" />
+                        </button>
+                        <button onClick={(e) => remove(f, e)}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-red-400 transition-all" title="删除">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-2 mt-1 ml-6">
+                        <span className="text-[10px] text-gray-600">{fmtSize(f.size)}</span>
+                        <span className="text-[10px] text-gray-700">· {fmtTime(f.modified_at)}</span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
         </div>
 
         {/* Preview */}

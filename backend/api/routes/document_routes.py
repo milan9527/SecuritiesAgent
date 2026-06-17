@@ -6,6 +6,7 @@ Knowledge base uses pgvector for semantic search
 from __future__ import annotations
 
 import uuid
+import json
 import traceback
 from datetime import datetime
 from fastapi import APIRouter, Depends, Query, UploadFile, File, Form
@@ -97,10 +98,14 @@ async def create_document(
     db: AsyncSession = Depends(get_db),
 ):
     """创建文档"""
+    # 自动归类: 调用方未指定具体类别 (空/general/imported) 时, 按标题+正文自动判定
+    category = request.category
+    if category in ("", "general", "imported") and request.content:
+        category = await auto_categorize_document(request.title, request.content)
     doc = Document(
         user_id=current_user.id,
         title=request.title,
-        category=request.category,
+        category=category,
         content=request.content,
         file_type="md",
         file_size=len(request.content.encode("utf-8")),
@@ -133,12 +138,16 @@ class _InternalSaveDoc(BaseModel):
 
 @router.post("/internal/save")
 async def internal_save_document(req: _InternalSaveDoc, db: AsyncSession = Depends(get_db)):
-    """Agent 调用: 把生成的文档/研报保存到该用户的【文档知识库】, 可选入库做语义检索。"""
+    """Agent 调用: 把生成的文档/研报保存到该用户的【文档知识库】, 可选入库做语义检索。
+    自动归类: agent 未指定具体类别时按内容判定。"""
     user = await resolve_internal_actor(req.token, req.actor_id, db)
+    category = req.category
+    if category in ("", "general", "imported") and req.content:
+        category = await auto_categorize_document(req.title, req.content)
     doc = Document(
         user_id=user.id,
         title=req.title[:300],
-        category=req.category or "general",
+        category=category,
         content=req.content,
         file_type=req.file_type or "md",
         file_size=len(req.content.encode("utf-8")),
@@ -223,6 +232,10 @@ async def upload_document(
 
     ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "txt"
 
+    # 自动归类: 未显式指定类别 (默认 imported) 时按内容判定
+    if category in ("", "general", "imported") and content:
+        category = await auto_categorize_document(file.filename, content)
+
     doc = Document(
         user_id=current_user.id,
         title=file.filename,
@@ -279,10 +292,15 @@ async def import_from_url(
         text_content = re.sub(r"<[^>]+>", " ", text_content)
         text_content = re.sub(r"\s+", " ", text_content).strip()
 
+        # 自动归类: 未显式指定类别 (默认 imported) 时按内容判定
+        category = request.category
+        if category in ("", "general", "imported") and text_content:
+            category = await auto_categorize_document(title, text_content)
+
         doc = Document(
             user_id=current_user.id,
             title=title[:300],
-            category=request.category,
+            category=category,
             content=text_content[:50000],
             file_type="txt",
             file_size=len(text_content.encode("utf-8")),
@@ -325,8 +343,15 @@ async def add_document_to_kb(
     if not doc.content:
         return {"error": "文档内容为空"}
 
+    # 加入知识库时自动归类: 仍是通用/导入类的, 按内容判定并更新
+    if doc.category in ("", "general", "imported"):
+        new_cat = await auto_categorize_document(doc.title, doc.content)
+        if new_cat != doc.category:
+            doc.category = new_cat
+            await db.commit()
+
     count = await _add_to_knowledge_base(db, doc, current_user.id)
-    return {"success": True, "chunks": count}
+    return {"success": True, "chunks": count, "category": doc.category}
 
 
 @router.post("/kb/search")
@@ -451,6 +476,60 @@ async def reindex_knowledge_base(
 # ═══════════════════════════════════════════════════════
 # 内部函数
 # ═══════════════════════════════════════════════════════
+
+# 文档自动归类: 候选类别 (与 /categories、CATEGORY_DIRS、前端保持一致)
+_DOC_CATEGORIES = ["analysis", "strategy", "quant", "market", "research", "imported", "general"]
+# 关键词兜底 (LLM 不可用时用), 命中即归类
+_CATEGORY_KEYWORDS = {
+    "quant": ["量化", "回测", "因子", "策略代码", "backtest", "sharpe", "夏普", "alpha"],
+    "strategy": ["交易策略", "买卖信号", "买入", "卖出", "止损", "止盈", "macd", "kdj", "均线", "建仓"],
+    "analysis": ["投资分析", "估值", "基本面", "技术面", "研究报告", "投资价值", "目标价", "评级"],
+    "market": ["大盘", "市场", "行业", "板块", "宏观", "指数", "复盘", "行情"],
+    "research": ["研报", "深度", "调研", "纪要", "白皮书"],
+}
+
+
+def _keyword_category(title: str, content: str) -> str:
+    text = f"{title} {content[:500]}".lower()
+    for cat, kws in _CATEGORY_KEYWORDS.items():
+        if any(kw.lower() in text for kw in kws):
+            return cat
+    return "general"
+
+
+async def auto_categorize_document(title: str, content: str) -> str:
+    """根据标题+正文自动判定文档类别 (用于加入知识库/管理时自动归类)。
+    优先用 LLM 精确归类, 失败回退关键词, 再回退 general。返回候选类别之一。"""
+    snippet = (content or "")[:1500]
+    try:
+        import boto3
+        client = boto3.client("bedrock-runtime", region_name=settings.AWS_REGION)
+        prompt = (
+            "你是文档归类器。把下面这篇证券/金融文档归入且仅归入以下一个类别, 只输出类别英文ID, 不要其他任何字符:\n"
+            "- analysis (个股投资分析/估值/基本面技术面)\n"
+            "- strategy (交易策略/买卖信号/择时规则)\n"
+            "- quant (量化策略/回测/因子/策略代码)\n"
+            "- market (大盘/行业/板块/宏观/市场复盘)\n"
+            "- research (深度研报/调研纪要/白皮书)\n"
+            "- imported (外部导入的通用资料)\n"
+            "- general (其他通用文档)\n\n"
+            f"标题: {title}\n正文(节选): {snippet}\n\n类别ID:"
+        )
+        body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": prompt}],
+        })
+        resp = client.invoke_model(modelId=settings.LLM_MODEL_ID, body=body)
+        text = json.loads(resp["body"].read()).get("content", [{}])[0].get("text", "")
+        cat = (text or "").strip().lower()
+        for c in _DOC_CATEGORIES:
+            if c in cat:
+                return c
+    except Exception as e:  # noqa: BLE001
+        print(f"[Documents] auto-categorize LLM failed: {e}")
+    return _keyword_category(title, content)
+
 
 async def _add_to_knowledge_base(db: AsyncSession, doc: Document, user_id) -> int:
     """Split document into chunks, optionally generate embeddings"""
