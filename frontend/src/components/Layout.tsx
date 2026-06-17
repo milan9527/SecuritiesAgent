@@ -3,14 +3,13 @@ import { useAuthStore } from '../store/authStore'
 import {
   LayoutDashboard, TrendingUp, Briefcase, Target,
   BarChart3, MessageSquare, Puzzle, LogOut, Bot,
-  FileSearch, Settings, FolderOpen, Clock, FolderOutput, Star,
+  FileSearch, Settings, FolderOpen, Clock, FolderOutput,
 } from 'lucide-react'
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: '总览' },
   { to: '/analysis', icon: FileSearch, label: '投资分析' },
   { to: '/market', icon: TrendingUp, label: '行情' },
-  { to: '/watchlist', icon: Star, label: '自选股' },
   { to: '/portfolio', icon: Briefcase, label: '模拟盘' },
   { to: '/strategy', icon: Target, label: '交易策略' },
   { to: '/quant', icon: BarChart3, label: '量化交易' },
