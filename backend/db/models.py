@@ -282,6 +282,14 @@ class QuantStrategy(Base):
     parameters = Column(JSON, default=dict)
     status = Column(Enum(StrategyStatus), default=StrategyStatus.DRAFT)
     performance_metrics = Column(JSON, default=dict)  # 最新回测指标
+    # 应用范围: watchlist(自选股池) | sector(板块) | market(全A股)
+    apply_scope = Column(String(20), default="watchlist")
+    # 范围目标: watchlist→池类型(analysis/trading/...); sector→板块名/代码; market→留空
+    apply_target = Column(String(100), default="")
+    # 自动执行: 开启后挂定时任务, 按 apply_scope 定期回测+信号(+可选模拟下单)
+    auto_execute = Column(Boolean, default=False)
+    # 关联的定时任务 id (自动执行时创建/更新)
+    scheduled_task_id = Column(String(64), default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -1,14 +1,20 @@
 """
-策略路由 - 交易策略和量化策略管理
+策略路由 - 量化策略管理 (合并 交易策略 + 量化交易)
+模板 / 自然语言生成 / 回测 / 应用到自选股·板块·全市场 / 自动执行
 """
 from __future__ import annotations
 
+import asyncio
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from db.database import get_db
-from db.models import User, TradingStrategy, QuantStrategy, Backtest, StrategyStatus, BacktestStatus
+from db.models import (
+    User, TradingStrategy, QuantStrategy, Backtest, StrategyStatus, BacktestStatus,
+    Watchlist, WatchlistItem, Stock,
+)
 from api.auth import get_current_user
 from api.internal_auth import resolve_internal_actor
 from api.schemas import (
@@ -17,6 +23,9 @@ from api.schemas import (
 )
 from agents.skills.quant_skill import run_backtest, list_quant_templates
 from agents.skills.market_data_skill import get_stock_kline
+
+# 应用/自动执行时单次最多回测多少只 (防超时); 全市场/板块取样上限
+_APPLY_MAX = 40
 
 router = APIRouter(prefix="/api/strategy", tags=["交易策略"])
 
@@ -132,6 +141,10 @@ async def get_quant_strategies(
         "template_name": s.template_name, "parameters": s.parameters,
         "status": s.status.value, "performance_metrics": s.performance_metrics,
         "code": s.code,
+        "apply_scope": getattr(s, "apply_scope", "watchlist") or "watchlist",
+        "apply_target": getattr(s, "apply_target", "") or "",
+        "auto_execute": bool(getattr(s, "auto_execute", False)),
+        "scheduled_task_id": getattr(s, "scheduled_task_id", "") or "",
     } for s in strategies]}
 
 
@@ -286,7 +299,283 @@ async def run_strategy_backtest(
 
 
 # ═══════════════════════════════════════════════════════
-# 应用策略到股票/自选股
+# 应用范围解析 + 应用策略 (回测+信号) + 编辑 + 自动执行
+# ═══════════════════════════════════════════════════════
+
+async def _resolve_scope_stocks(
+    user: User, scope: str, target: str, db: AsyncSession, limit: int = _APPLY_MAX
+) -> list[dict]:
+    """把 (scope, target) 解析成 [{code, name}] 列表。
+    - watchlist: 用户自选股池 (target=池类型 analysis/trading/..., 空=分析+实际交易合并)
+    - sector:    Stock 表按 sector/industry 过滤 (target=板块名)
+    - market:    Stock 表取样 (全A股, 上限 limit)
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(code: str, name: str):
+        c = (code or "").strip()
+        if c and c not in seen:
+            seen.add(c)
+            out.append({"code": c, "name": name or ""})
+
+    if scope == "watchlist":
+        wl_res = await db.execute(
+            select(Watchlist).where(Watchlist.user_id == user.id).order_by(Watchlist.is_default.desc())
+        )
+        wls = wl_res.scalars().all()
+        wl_ids = [w.id for w in wls]
+        if wl_ids:
+            it_res = await db.execute(select(WatchlistItem).where(WatchlistItem.watchlist_id.in_(wl_ids)))
+            for it in it_res.scalars().all():
+                pool = getattr(it, "pool_type", "analysis") or "analysis"
+                if target and pool != target:
+                    continue
+                if not target and pool not in ("analysis", "trading"):
+                    continue  # 默认只取 分析+实际交易 两个真实股票池
+                _add(it.stock_code, it.stock_name)
+    elif scope == "sector":
+        q = select(Stock).where(Stock.is_active == True)
+        if target:
+            from sqlalchemy import or_
+            q = q.where(or_(Stock.sector == target, Stock.industry == target))
+        q = q.limit(limit)
+        for s in (await db.execute(q)).scalars().all():
+            _add(s.code, s.name)
+    elif scope == "market":
+        q = select(Stock).where(Stock.is_active == True).limit(limit)
+        for s in (await db.execute(q)).scalars().all():
+            _add(s.code, s.name)
+
+    return out[:limit]
+
+
+class ApplyRequest(BaseModel):
+    strategy_id: str
+    scope: str = "watchlist"        # watchlist | sector | market
+    target: str = ""                # 池类型 / 板块名
+    initial_capital: float = 1000000.0
+    period_days: int = 120
+    persist: bool = False           # true: 把 scope/target 存回策略
+
+
+@router.post("/quant/apply")
+async def apply_quant_strategy(
+    request: ApplyRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """把量化策略应用到一个标的范围: 对范围内每只股票回测, 汇总信号 (最新一根的 buy/sell/hold)。
+    不自动下单 (下单由"自动执行"在模拟盘进行)。"""
+    res = await db.execute(
+        select(QuantStrategy).where(QuantStrategy.id == request.strategy_id, QuantStrategy.user_id == current_user.id)
+    )
+    strategy = res.scalar_one_or_none()
+    if not strategy:
+        raise HTTPException(status_code=404, detail="量化策略不存在")
+
+    stocks = await _resolve_scope_stocks(current_user, request.scope, request.target, db)
+    if not stocks:
+        return {"scope": request.scope, "target": request.target, "count": 0,
+                "results": [], "message": "该范围内没有可用股票"}
+
+    tmpl = strategy.template_name or "dual_ma_cross"
+    params = strategy.parameters or {}
+
+    def _one(code: str, name: str) -> dict:
+        bt = run_backtest(stock_code=code, strategy_name=tmpl, strategy_params=params,
+                          initial_capital=request.initial_capital, period_days=request.period_days)
+        if "error" in bt or bt.get("status") == "failed":
+            return {"code": code, "name": name, "error": bt.get("error", "回测失败")}
+        log = bt.get("trade_log", [])
+        last = log[-1] if log else {}
+        signal = (last.get("action") or "hold").lower()
+        return {
+            "code": code, "name": name, "signal": signal,
+            "total_return": bt.get("total_return", 0), "win_rate": bt.get("win_rate", 0),
+            "sharpe_ratio": bt.get("sharpe_ratio", 0), "max_drawdown": bt.get("max_drawdown", 0),
+            "trades": bt.get("total_trades", 0),
+        }
+
+    # 并发跑回测 (线程池), 限制范围已在解析时截断
+    results = await asyncio.gather(*[asyncio.to_thread(_one, s["code"], s["name"]) for s in stocks])
+    results = list(results)
+    buys = [r for r in results if r.get("signal") == "buy"]
+    sells = [r for r in results if r.get("signal") == "sell"]
+
+    if request.persist:
+        strategy.apply_scope = request.scope
+        strategy.apply_target = request.target
+        await db.commit()
+
+    return {
+        "scope": request.scope, "target": request.target, "count": len(results),
+        "buy_count": len(buys), "sell_count": len(sells),
+        "results": sorted(results, key=lambda r: r.get("total_return", 0), reverse=True),
+    }
+
+
+class QuantUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    template_name: Optional[str] = None
+    code: Optional[str] = None
+    parameters: Optional[dict] = None
+    status: Optional[str] = None
+    apply_scope: Optional[str] = None
+    apply_target: Optional[str] = None
+
+
+@router.put("/quant/{strategy_id}")
+async def update_quant_strategy(
+    strategy_id: str, request: QuantUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """编辑量化策略"""
+    res = await db.execute(
+        select(QuantStrategy).where(QuantStrategy.id == strategy_id, QuantStrategy.user_id == current_user.id)
+    )
+    s = res.scalar_one_or_none()
+    if not s:
+        raise HTTPException(status_code=404, detail="量化策略不存在")
+    if request.name is not None: s.name = request.name[:100]
+    if request.description is not None: s.description = request.description
+    if request.template_name is not None: s.template_name = request.template_name[:50]
+    if request.code is not None: s.code = request.code
+    if request.parameters is not None: s.parameters = request.parameters
+    if request.apply_scope is not None: s.apply_scope = request.apply_scope
+    if request.apply_target is not None: s.apply_target = request.apply_target
+    if request.status is not None:
+        try: s.status = StrategyStatus(request.status)
+        except ValueError: pass
+    await db.commit()
+    return {"success": True, "id": str(s.id)}
+
+
+@router.delete("/quant/{strategy_id}")
+async def delete_quant_strategy(
+    strategy_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """删除量化策略 (同时关闭其自动执行任务)"""
+    res = await db.execute(
+        select(QuantStrategy).where(QuantStrategy.id == strategy_id, QuantStrategy.user_id == current_user.id)
+    )
+    s = res.scalar_one_or_none()
+    if not s:
+        raise HTTPException(status_code=404, detail="量化策略不存在")
+    if getattr(s, "scheduled_task_id", ""):
+        try:
+            from services.task_scheduler import remove_task
+            from services import eventbridge_scheduler as ebs
+            ebs.delete_schedule(s.scheduled_task_id) if ebs.enabled() else remove_task(s.scheduled_task_id)
+        except Exception:
+            pass
+    await db.delete(s)
+    await db.commit()
+    return {"success": True}
+
+
+class AutoExecRequest(BaseModel):
+    enable: bool
+    cron_expression: str = "cron(0,30 9-11,13-15 ? * MON-FRI *)"  # 交易时段每半小时
+    place_orders: bool = False     # true: 按信号在模拟盘下单; false: 仅生成信号+通知
+    notification_email: str = ""
+
+
+@router.post("/quant/{strategy_id}/auto-execute")
+async def toggle_auto_execute(
+    strategy_id: str, request: AutoExecRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """启用/关闭策略自动执行。启用时创建/更新一个定时任务 (在 apply_scope 范围上定期回测+信号,
+    可选按信号在模拟盘下单); 关闭时停用该任务。"""
+    res = await db.execute(
+        select(QuantStrategy).where(QuantStrategy.id == strategy_id, QuantStrategy.user_id == current_user.id)
+    )
+    s = res.scalar_one_or_none()
+    if not s:
+        raise HTTPException(status_code=404, detail="量化策略不存在")
+
+    from db.models import ScheduledTask
+    scope = s.apply_scope or "watchlist"
+    target = s.apply_target or ""
+    order_clause = (
+        "对出现『强烈买入/买入』信号的股票, 用 place_simulated_order 在模拟盘买入 (单只≤总资金5%, 100股整数倍); "
+        "对持仓中出现『卖出/清仓』信号的, 卖出。"
+        if request.place_orders else
+        "只生成买卖信号清单并通知, 不下单。"
+    )
+    prompt = (
+        f"【量化策略自动执行】运行已保存的量化策略「{s.name}」(模板 {s.template_name or 'dual_ma_cross'}).\n"
+        f"应用范围: {scope}" + (f" / {target}" if target else "") + ".\n"
+        f"步骤: 1) 先做交易时段校验, 非交易时段直接退出; 2) 取该范围的股票列表; "
+        f"3) 对每只用该策略逻辑+实时/历史行情计算最新买卖信号 (轻量, 不写长报告); "
+        f"4) 汇总成精简信号表 (代码|名称|信号|关键指标); 5) {order_clause}\n"
+        f"输出简短, 控制在数分钟内完成。"
+    )
+
+    def _sync(task):
+        from api.routes.scheduler_routes import _sync_schedule
+        return _sync_schedule(task)
+
+    if request.enable:
+        task = None
+        if getattr(s, "scheduled_task_id", ""):
+            tres = await db.execute(select(ScheduledTask).where(ScheduledTask.id == s.scheduled_task_id))
+            task = tres.scalar_one_or_none()
+        if task is None:
+            task = ScheduledTask(
+                user_id=current_user.id,
+                name=f"[量化自动执行] {s.name}",
+                description=f"自动执行量化策略 {s.name} ({scope})",
+                prompt=prompt,
+                cron_expression=request.cron_expression,
+                timezone="Asia/Shanghai",
+                agent_type="quant",
+                notification_email=request.notification_email or current_user.email or "",
+                is_active=True,
+            )
+            db.add(task)
+            await db.commit()
+            await db.refresh(task)
+            s.scheduled_task_id = str(task.id)
+        else:
+            task.prompt = prompt
+            task.cron_expression = request.cron_expression
+            task.is_active = True
+            if request.notification_email:
+                task.notification_email = request.notification_email
+            await db.commit()
+        sched = _sync(task)
+        if isinstance(sched, dict) and sched.get("schedule_arn"):
+            task.aws_rule_name = sched.get("name", "")
+            task.aws_rule_arn = sched["schedule_arn"]
+        s.auto_execute = True
+        s.status = StrategyStatus.ACTIVE
+        await db.commit()
+        return {"success": True, "auto_execute": True, "task_id": str(task.id),
+                "cron": task.cron_expression, "schedule": sched}
+    else:
+        # 关闭: 停用任务
+        if getattr(s, "scheduled_task_id", ""):
+            tres = await db.execute(select(ScheduledTask).where(ScheduledTask.id == s.scheduled_task_id))
+            task = tres.scalar_one_or_none()
+            if task:
+                task.is_active = False
+                await db.commit()
+                _sync(task)
+        s.auto_execute = False
+        s.status = StrategyStatus.PAUSED
+        await db.commit()
+        return {"success": True, "auto_execute": False}
+
+
+# ═══════════════════════════════════════════════════════
+# 应用策略到股票/自选股 (旧: 交易策略, 保留)
 # ═══════════════════════════════════════════════════════
 
 @router.delete("/trading/{strategy_id}")

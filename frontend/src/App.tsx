@@ -6,7 +6,6 @@ import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import MarketPage from './pages/MarketPage'
 import PortfolioPage from './pages/PortfolioPage'
-import StrategyPage from './pages/StrategyPage'
 import QuantPage from './pages/QuantPage'
 import ChatPage from './pages/ChatPage'
 import SkillsPage from './pages/SkillsPage'
@@ -44,7 +43,7 @@ export default function App() {
                   <Route path="/market" element={<MarketPage />} />
                   <Route path="/watchlist" element={<Navigate to="/market" replace />} />
                   <Route path="/portfolio" element={<PortfolioPage />} />
-                  <Route path="/strategy" element={<StrategyPage />} />
+                  <Route path="/strategy" element={<Navigate to="/quant" replace />} />
                   <Route path="/quant" element={<QuantPage />} />
                   <Route path="/chat" element={<ChatPage />} />
                   <Route path="/skills" element={<SkillsPage />} />

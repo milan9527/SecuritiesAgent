@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
-import { BarChart3, Play, FileCode, Zap, Sparkles, Send, Eye, X } from 'lucide-react'
+import { BarChart3, Play, FileCode, Zap, Sparkles, Send, Eye, Target, Power, Trash2 } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import ReactMarkdown from 'react-markdown'
 import StockSearch from '../components/StockSearch'
 import api from '../services/api'
 import toast from 'react-hot-toast'
+
+const SCOPE_LABEL: Record<string, string> = { watchlist: '自选股池', sector: '板块', market: '全A股' }
 
 export default function QuantPage() {
   const [templates, setTemplates] = useState<any[]>([])
@@ -16,6 +18,11 @@ export default function QuantPage() {
   const [aiPrompt, setAiPrompt] = useState('')
   const [aiResult, setAiResult] = useState('')
   const [aiLoading, setAiLoading] = useState(false)
+  // 应用到范围
+  const [applyForm, setApplyForm] = useState({ strategy_id: '', scope: 'watchlist', target: '' })
+  const [applyResult, setApplyResult] = useState<any>(null)
+  const [applying, setApplying] = useState(false)
+  const [busyId, setBusyId] = useState('')
 
   useEffect(() => { loadData() }, [])
 
@@ -41,6 +48,38 @@ export default function QuantPage() {
     setRunning(false)
   }
 
+  const handleApply = async () => {
+    if (!applyForm.strategy_id) { toast.error('请选择策略'); return }
+    setApplying(true); setApplyResult(null)
+    try {
+      const res = await api.post('/api/strategy/quant/apply', {
+        strategy_id: applyForm.strategy_id, scope: applyForm.scope,
+        target: applyForm.target, persist: true,
+      })
+      setApplyResult(res.data)
+      toast.success(`已应用到${res.data.count}只股票 (买入${res.data.buy_count}/卖出${res.data.sell_count})`)
+    } catch (e: any) { toast.error(e.response?.data?.detail || '应用失败') }
+    setApplying(false)
+  }
+
+  const toggleAuto = async (s: any) => {
+    setBusyId(s.id)
+    try {
+      const res = await api.post(`/api/strategy/quant/${s.id}/auto-execute`, {
+        enable: !s.auto_execute, place_orders: false,
+      })
+      toast.success(res.data.auto_execute ? `已启用自动执行 (${res.data.cron})` : '已关闭自动执行')
+      loadData()
+    } catch (e: any) { toast.error(e.response?.data?.detail || '操作失败') }
+    setBusyId('')
+  }
+
+  const delStrategy = async (s: any) => {
+    if (!confirm(`删除策略「${s.name}」？将同时关闭其自动执行。`)) return
+    try { await api.delete(`/api/strategy/quant/${s.id}`); toast.success('已删除'); loadData() }
+    catch (e: any) { toast.error(e.response?.data?.detail || '删除失败') }
+  }
+
   const handleAi = async () => {
     if (!aiPrompt || aiLoading) return
     setAiLoading(true); setAiResult('')
@@ -63,7 +102,10 @@ export default function QuantPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-white flex items-center gap-2"><BarChart3 className="w-6 h-6 text-accent-gold" /> 量化交易</h1>
+      <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+        <BarChart3 className="w-6 h-6 text-accent-gold" /> 量化策略
+        <span className="text-xs font-normal text-gray-500">模板 · 自然语言生成 · 回测 · 应用到自选股/板块/全市场 · 自动执行</span>
+      </h1>
 
       {/* 模板 */}
       <div className="card">
@@ -182,24 +224,88 @@ export default function QuantPage() {
         </div>
       )}
 
+      {/* 应用到范围 (回测+信号) */}
+      <div className="card">
+        <h2 className="text-sm font-semibold text-gray-400 mb-3 flex items-center gap-2"><Target className="w-4 h-4 text-accent-gold" /> 应用策略到标的范围</h2>
+        <div className="grid grid-cols-4 gap-3 items-end">
+          <div>
+            <label className="text-[10px] text-gray-500 mb-1 block">策略</label>
+            <select className="input-field text-xs" value={applyForm.strategy_id} onChange={e => setApplyForm({ ...applyForm, strategy_id: e.target.value })}>
+              <option value="">选择策略</option>
+              {strategies.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-[10px] text-gray-500 mb-1 block">范围</label>
+            <select className="input-field text-xs" value={applyForm.scope} onChange={e => setApplyForm({ ...applyForm, scope: e.target.value, target: '' })}>
+              <option value="watchlist">自选股池</option>
+              <option value="sector">板块</option>
+              <option value="market">全A股 (取样)</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[10px] text-gray-500 mb-1 block">{applyForm.scope === 'sector' ? '板块名' : applyForm.scope === 'watchlist' ? '池(空=分析+实际交易)' : '(全市场)'}</label>
+            <input className="input-field text-xs" disabled={applyForm.scope === 'market'} value={applyForm.target}
+              onChange={e => setApplyForm({ ...applyForm, target: e.target.value })}
+              placeholder={applyForm.scope === 'sector' ? '如: 银行' : applyForm.scope === 'watchlist' ? 'analysis / trading' : ''} />
+          </div>
+          <button onClick={handleApply} disabled={applying} className="btn-primary text-sm flex items-center gap-1 disabled:opacity-50">
+            <Target className="w-3 h-3" /> {applying ? '应用中...' : '应用'}
+          </button>
+        </div>
+        {applyResult && (
+          <div className="mt-3 overflow-x-auto">
+            <p className="text-xs text-gray-500 mb-2">范围 {SCOPE_LABEL[applyResult.scope]}{applyResult.target ? `/${applyResult.target}` : ''} · 共{applyResult.count}只 · 买入{applyResult.buy_count} 卖出{applyResult.sell_count}</p>
+            <table className="w-full text-xs">
+              <thead><tr className="text-gray-500 border-b border-surface-border">
+                <th className="text-left py-1.5">代码</th><th className="text-left py-1.5">名称</th><th className="text-center py-1.5">信号</th>
+                <th className="text-right py-1.5">收益%</th><th className="text-right py-1.5">胜率</th><th className="text-right py-1.5">夏普</th><th className="text-right py-1.5">回撤%</th>
+              </tr></thead>
+              <tbody>{applyResult.results.map((r: any, i: number) => (
+                <tr key={i} className="border-b border-surface-border/40">
+                  <td className="py-1.5 font-mono text-gray-400">{r.code}</td>
+                  <td className="py-1.5 text-gray-200">{r.name}</td>
+                  <td className="py-1.5 text-center">{r.error ? <span className="text-gray-600">{r.error}</span> :
+                    <span className={r.signal === 'buy' ? 'badge-buy' : r.signal === 'sell' ? 'badge-sell' : 'text-gray-500'}>{r.signal === 'buy' ? '买入' : r.signal === 'sell' ? '卖出' : '持有'}</span>}</td>
+                  <td className={`py-1.5 text-right font-mono ${r.total_return >= 0 ? 'text-accent-red' : 'text-accent-green'}`}>{r.total_return?.toFixed(1)}</td>
+                  <td className="py-1.5 text-right text-gray-400">{r.win_rate?.toFixed(0)}</td>
+                  <td className="py-1.5 text-right text-blue-400">{r.sharpe_ratio?.toFixed(2)}</td>
+                  <td className="py-1.5 text-right text-yellow-500">{r.max_drawdown?.toFixed(1)}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       {/* 我的策略 */}
       {strategies.length > 0 && (
         <div className="card">
           <h2 className="text-sm font-semibold text-gray-400 mb-3 flex items-center gap-2"><FileCode className="w-4 h-4 text-blue-400" /> 我的量化策略</h2>
           <div className="space-y-2">
             {strategies.map(s => (
-              <div key={s.id} className="bg-surface-hover rounded-lg p-3 border border-surface-border/50 flex items-center justify-between">
-                <div>
-                  <h3 className="text-white text-sm font-medium">{s.name}</h3>
-                  <p className="text-gray-500 text-xs">{s.description}</p>
-                  {s.performance_metrics && Object.keys(s.performance_metrics).length > 0 && (
-                    <div className="flex gap-3 mt-1 text-[10px]">
-                      <span className="text-gray-400">收益: <span className={s.performance_metrics.total_return >= 0 ? 'text-accent-red' : 'text-accent-green'}>{s.performance_metrics.total_return?.toFixed(1)}%</span></span>
-                      <span className="text-gray-400">夏普: <span className="text-blue-400">{s.performance_metrics.sharpe_ratio?.toFixed(2)}</span></span>
-                    </div>
-                  )}
+              <div key={s.id} className="bg-surface-hover rounded-lg p-3 border border-surface-border/50 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-white text-sm font-medium truncate">{s.name}</h3>
+                    {s.auto_execute && <span className="text-[10px] px-1.5 py-0.5 bg-green-900/30 text-green-400 rounded flex items-center gap-1"><Power className="w-2.5 h-2.5" /> 自动执行中</span>}
+                  </div>
+                  <p className="text-gray-500 text-xs truncate">{s.description}</p>
+                  <div className="flex gap-3 mt-1 text-[10px] flex-wrap">
+                    {s.template_name && <span className="text-gray-600">模板 {s.template_name}</span>}
+                    <span className="text-gray-600">范围 {SCOPE_LABEL[s.apply_scope] || s.apply_scope}{s.apply_target ? `/${s.apply_target}` : ''}</span>
+                    {s.performance_metrics?.total_return != null && (
+                      <span className="text-gray-400">收益 <span className={s.performance_metrics.total_return >= 0 ? 'text-accent-red' : 'text-accent-green'}>{s.performance_metrics.total_return?.toFixed(1)}%</span></span>
+                    )}
+                  </div>
                 </div>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded ${s.status === 'active' ? 'bg-green-900/30 text-green-400' : 'bg-gray-800 text-gray-400'}`}>{s.status === 'active' ? '运行中' : '草稿'}</span>
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <button onClick={() => toggleAuto(s)} disabled={busyId === s.id}
+                    className={`text-[10px] px-2 py-1 rounded flex items-center gap-1 disabled:opacity-50 ${s.auto_execute ? 'bg-green-900/30 text-green-400' : 'bg-surface-border text-gray-400 hover:text-white'}`}>
+                    <Power className="w-3 h-3" /> {s.auto_execute ? '停用' : '自动执行'}
+                  </button>
+                  <button onClick={() => delStrategy(s)} className="text-gray-600 hover:text-red-400 p-1"><Trash2 className="w-3.5 h-3.5" /></button>
+                </div>
               </div>
             ))}
           </div>

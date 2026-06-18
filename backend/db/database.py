@@ -78,3 +78,14 @@ async def init_db():
             ))
         except Exception:
             pass
+        # 量化策略: 应用范围 + 自动执行 (合并交易策略/量化模块)
+        for ddl in (
+            "ALTER TABLE quant_strategies ADD COLUMN IF NOT EXISTS apply_scope VARCHAR(20) DEFAULT 'watchlist'",
+            "ALTER TABLE quant_strategies ADD COLUMN IF NOT EXISTS apply_target VARCHAR(100) DEFAULT ''",
+            "ALTER TABLE quant_strategies ADD COLUMN IF NOT EXISTS auto_execute BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE quant_strategies ADD COLUMN IF NOT EXISTS scheduled_task_id VARCHAR(64) DEFAULT ''",
+        ):
+            try:
+                await conn.execute(text(ddl))
+            except Exception:
+                pass
