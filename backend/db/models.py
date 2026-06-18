@@ -445,6 +445,7 @@ class ScheduledTask(Base):
     is_active = Column(Boolean, default=True)
     agent_type = Column(String(50), default="orchestrator")
     notification_email = Column(String(255), default="")  # Send result to email
+    notify_enabled = Column(Boolean, default=True)  # 通知邮箱开关 (关闭则保留地址但不发信)
     aws_rule_name = Column(String(200), default="")  # EventBridge rule name
     aws_rule_arn = Column(String(500), default="")
     last_run_at = Column(DateTime, nullable=True)

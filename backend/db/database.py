@@ -61,6 +61,8 @@ async def init_db():
         "ALTER TABLE quant_strategies ADD COLUMN IF NOT EXISTS apply_target VARCHAR(100) DEFAULT ''",
         "ALTER TABLE quant_strategies ADD COLUMN IF NOT EXISTS auto_execute BOOLEAN DEFAULT FALSE",
         "ALTER TABLE quant_strategies ADD COLUMN IF NOT EXISTS scheduled_task_id VARCHAR(64) DEFAULT ''",
+        # 定期任务: 通知邮箱开关 (关闭则保留地址但不发信)
+        "ALTER TABLE scheduled_tasks ADD COLUMN IF NOT EXISTS notify_enabled BOOLEAN DEFAULT TRUE",
     ]
     for ddl in migrations:
         try:

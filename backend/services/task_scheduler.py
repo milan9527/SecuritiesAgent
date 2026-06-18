@@ -231,8 +231,8 @@ async def _execute_task(task_id: str):
             db.add(doc)
             await db.commit()
 
-            # Send email notification — only if response is not an error
-            if task.notification_email and not response.startswith("⚠️"):
+            # Send email notification — only if 通知开关开启、有地址且结果非错误
+            if getattr(task, "notify_enabled", True) and task.notification_email and not response.startswith("⚠️"):
                 try:
                     from api.routes.scheduler_routes import _send_task_notification
                     await _send_task_notification(task.name, response, task.notification_email)

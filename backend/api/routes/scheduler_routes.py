@@ -58,6 +58,7 @@ class TaskUpdate(BaseModel):
     cron_expression: str = ""
     is_active: bool = True
     notification_email: str = ""
+    notify_enabled: Optional[bool] = None  # 通知邮箱开关; None=不修改
 
 
 @router.get("/")
@@ -92,6 +93,7 @@ async def list_tasks(
         "prompt": t.prompt, "cron_expression": t.cron_expression,
         "timezone": t.timezone, "is_active": t.is_active,
         "agent_type": t.agent_type, "notification_email": t.notification_email,
+        "notify_enabled": bool(getattr(t, "notify_enabled", True)),
         "last_run_at": t.last_run_at.isoformat() if t.last_run_at else "",
         "last_result": (t.last_result or "")[:200],
         "created_at": t.created_at.isoformat() if t.created_at else "",
@@ -159,6 +161,7 @@ async def update_task(
     if request.cron_expression: task.cron_expression = request.cron_expression
     task.is_active = request.is_active
     if request.notification_email: task.notification_email = request.notification_email
+    if request.notify_enabled is not None: task.notify_enabled = request.notify_enabled
 
     await db.commit()
 
@@ -217,6 +220,7 @@ async def run_task_now(
     task_db_id = task.id
     task_name = task.name
     task_email = task.notification_email
+    task_notify = getattr(task, "notify_enabled", True)
     user_id = current_user.id
 
     # Inject current date and conditionally load watchlist
@@ -338,8 +342,8 @@ async def run_task_now(
         except Exception as e:
             print(f"[Scheduler] Save failed: {e}")
 
-        # Send notification via SNS
-        if task_email:
+        # Send notification — only if 通知开关开启且有地址
+        if task_notify and task_email:
             try:
                 await _send_task_notification(task_name, response, task_email)
             except Exception as e:

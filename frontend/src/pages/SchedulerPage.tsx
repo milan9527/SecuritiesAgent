@@ -21,7 +21,7 @@ export default function SchedulerPage() {
   const [creating, setCreating] = useState(false)
   const [runResult, setRunResult] = useState<any>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [editForm, setEditForm] = useState({ name: '', description: '', prompt: '', cron_expression: '', notification_email: '' })
+  const [editForm, setEditForm] = useState({ name: '', description: '', prompt: '', cron_expression: '', notification_email: '', notify_enabled: true })
 
   useEffect(() => { loadTasks(); loadUserEmail() }, [])
 
@@ -67,6 +67,7 @@ export default function SchedulerPage() {
       prompt: t.prompt || '',
       cron_expression: t.cron_expression || '',
       notification_email: t.notification_email || '',
+      notify_enabled: t.notify_enabled !== false,
     })
   }
 
@@ -188,10 +189,19 @@ export default function SchedulerPage() {
                     onChange={e => setEditForm({ ...editForm, prompt: e.target.value })} />
                 </div>
                 <div>
-                  <label className="text-[10px] text-gray-500 mb-1 block flex items-center gap-1"><Mail className="w-3 h-3" /> 通知邮箱 (SNS)</label>
-                  <input className="input-field text-sm" value={editForm.notification_email}
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] text-gray-500 flex items-center gap-1"><Mail className="w-3 h-3" /> 通知邮箱</label>
+                    <label className="flex items-center gap-1.5 cursor-pointer text-[10px] text-gray-400">
+                      <input type="checkbox" checked={editForm.notify_enabled}
+                        onChange={e => setEditForm({ ...editForm, notify_enabled: e.target.checked })} />
+                      {editForm.notify_enabled ? '邮件通知已启用' : '邮件通知已禁用'}
+                    </label>
+                  </div>
+                  <input className="input-field text-sm disabled:opacity-50" value={editForm.notification_email}
+                    disabled={!editForm.notify_enabled}
                     onChange={e => setEditForm({ ...editForm, notification_email: e.target.value })}
                     placeholder="留空则不发送通知" />
+                  <p className="text-[10px] text-gray-600 mt-1">禁用后保留地址但不发送结果邮件</p>
                 </div>
                 <div className="flex gap-3">
                   <button onClick={handleSaveEdit} className="btn-primary text-sm flex items-center gap-1">
@@ -233,7 +243,14 @@ export default function SchedulerPage() {
                   </div>
                   <div className="bg-surface-hover rounded p-2">
                     <p className="text-gray-600">通知邮箱</p>
-                    <p className="text-gray-400 mt-1">{t.notification_email || '未设置'}</p>
+                    <p className="text-gray-400 mt-1">
+                      {t.notification_email || '未设置'}
+                      {t.notification_email && (
+                        <span className={`ml-1.5 text-[10px] px-1 py-0.5 rounded ${t.notify_enabled !== false ? 'bg-green-900/30 text-green-400' : 'bg-gray-800 text-gray-500'}`}>
+                          {t.notify_enabled !== false ? '已启用' : '已禁用'}
+                        </span>
+                      )}
+                    </p>
                   </div>
                 </div>
 
