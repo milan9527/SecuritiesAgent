@@ -20,6 +20,11 @@ import asyncio
 from bedrock_agentcore import BedrockAgentCoreApp
 
 # ── OTEL Tracing Setup ──
+# 初始化追踪 (发送 trace/span 到 AgentCore Observability)。幂等; 若已由
+# opentelemetry-instrument(ADOT) 装配则复用。必须在取 tracer 前调用。
+from agents.otel_setup import init_tracing
+init_tracing("securities-trading-agent")
+
 from opentelemetry import trace
 from opentelemetry.trace import StatusCode
 
@@ -374,17 +379,26 @@ async def run_orchestrator_async(
     text_parts: list[str] = []
     final_result: str | None = None
 
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    text_parts.append(block.text)
-        elif isinstance(message, ResultMessage):
-            final_result = getattr(message, "result", None)
-
-    if final_result:
-        return final_result
-    return "".join(text_parts) or "Agent未返回响应"
+    with tracer.start_as_current_span("agent_run") as span:
+        span.set_attribute("request.session_id", session_id)
+        span.set_attribute("request.user_id", str(actor_id))
+        span.set_attribute("request.prompt_length", len(prompt))
+        span.set_attribute("agent.mode", "blocking")
+        n_tools = 0
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        text_parts.append(block.text)
+                    elif isinstance(block, ToolUseBlock):
+                        n_tools += 1
+            elif isinstance(message, ResultMessage):
+                final_result = getattr(message, "result", None)
+        resp = final_result or "".join(text_parts) or "Agent未返回响应"
+        span.set_attribute("agent.tool_calls", n_tools)
+        span.set_attribute("response.length", len(resp))
+        span.set_status(StatusCode.OK)
+        return resp
 
 
 def run_orchestrator(prompt: str, session_id: str = "default", actor_id: str = "system") -> str:
@@ -437,6 +451,17 @@ async def run_orchestrator_stream_async(prompt: str, session_id: str = "default"
     options = _build_options(session_id=session_id, actor_id=actor_id)
     text_parts: list[str] = []
     final_result: str | None = None
+    # 进行中的工具/子Agent span: tool_use_id → span, 在 tool_result 时结束
+    _tool_spans: dict[str, "trace.Span"] = {}
+
+    root_span = tracer.start_span("agent_stream")
+    root_span.set_attribute("request.session_id", session_id)
+    root_span.set_attribute("request.user_id", str(actor_id))
+    root_span.set_attribute("request.prompt_length", len(prompt))
+    root_span.set_attribute("agent.mode", "stream")
+    root_ctx = trace.set_span_in_context(root_span)
+    n_tools = 0
+    n_subagents = 0
 
     try:
         async for message in query(prompt=prompt, options=options):
@@ -473,6 +498,22 @@ async def run_orchestrator_stream_async(prompt: str, session_id: str = "default"
                         if is_sub:
                             inp = block.input or {}
                             evt["subagent_type"] = inp.get("subagent_type") or inp.get("description") or ""
+                        # OTEL: 每个工具调用/子Agent委派开一个子 span (在 tool_result 时结束)
+                        try:
+                            span_name = ("subagent " + (evt.get("subagent_type") or "")) if is_sub else f"tool {name}"
+                            sp = tracer.start_span(span_name.strip(), context=root_ctx)
+                            sp.set_attribute("tool.name", name)
+                            sp.set_attribute("tool.is_subagent", is_sub)
+                            sp.set_attribute("gen_ai.tool.name", name)
+                            if is_sub:
+                                n_subagents += 1
+                                sp.set_attribute("subagent.type", evt.get("subagent_type") or "")
+                            else:
+                                n_tools += 1
+                            if block.id:
+                                _tool_spans[block.id] = sp
+                        except Exception:  # noqa: BLE001
+                            pass
                         yield evt
                 continue
 
@@ -482,10 +523,20 @@ async def run_orchestrator_stream_async(prompt: str, session_id: str = "default"
                 if isinstance(content, list):
                     for block in content:
                         if isinstance(block, ToolResultBlock):
+                            is_err = bool(getattr(block, "is_error", False))
+                            # OTEL: 结束对应工具 span
+                            sp = _tool_spans.pop(block.tool_use_id, None)
+                            if sp is not None:
+                                try:
+                                    sp.set_attribute("tool.is_error", is_err)
+                                    sp.set_status(StatusCode.ERROR if is_err else StatusCode.OK)
+                                    sp.end()
+                                except Exception:  # noqa: BLE001
+                                    pass
                             yield {
                                 "type": "tool_result",
                                 "tool_use_id": block.tool_use_id,
-                                "is_error": bool(getattr(block, "is_error", False)),
+                                "is_error": is_err,
                                 "preview": _short(block.content, 300),
                             }
                 continue
@@ -497,7 +548,24 @@ async def run_orchestrator_stream_async(prompt: str, session_id: str = "default"
     except Exception as e:  # noqa: BLE001
         import traceback
         print(f"[orchestrator stream] error: {e}\n{traceback.format_exc()}")
+        try:
+            root_span.set_status(StatusCode.ERROR, str(e)[:200])
+            root_span.record_exception(e)
+        except Exception:  # noqa: BLE001
+            pass
         yield {"type": "error", "message": str(e)[:300]}
+    finally:
+        # 结束所有未闭合的工具 span + 根 span
+        for sp in _tool_spans.values():
+            try: sp.end()
+            except Exception: pass  # noqa: E722
+        _tool_spans.clear()
+        try:
+            root_span.set_attribute("agent.tool_calls", n_tools)
+            root_span.set_attribute("agent.subagent_calls", n_subagents)
+            root_span.end()
+        except Exception:  # noqa: BLE001
+            pass
 
     response = final_result or "".join(text_parts) or "Agent未返回响应"
     yield {"type": "result", "response": response, "session_id": session_id}

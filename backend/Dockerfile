@@ -23,6 +23,7 @@ RUN uvx --help >/dev/null 2>&1 || true
 COPY pyproject.toml .
 RUN pip install --no-cache-dir -e . 2>/dev/null || pip install --no-cache-dir \
     claude-agent-sdk bedrock-agentcore opentelemetry-api opentelemetry-sdk \
+    opentelemetry-exporter-otlp-proto-http aws-opentelemetry-distro \
     fastapi "uvicorn[standard]" httpx "sqlalchemy[asyncio]" asyncpg psycopg2-binary \
     alembic redis pydantic pydantic-settings python-dotenv pandas numpy boto3 \
     "python-jose[cryptography]" "passlib[bcrypt]" "bcrypt<5" python-multipart \
