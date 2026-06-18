@@ -38,54 +38,33 @@ async def get_db() -> AsyncSession:
 
 
 async def init_db():
-    """创建所有表 + pgvector扩展"""
+    """创建所有表 + pgvector扩展 + 轻量迁移。
+    每条迁移语句各自独立事务: 某条失败 (如约束已存在) 不会污染/回滚后续语句的事务。"""
     async with engine.begin() as conn:
-        # Enable pgvector extension
         try:
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         except Exception:
             pass
         await conn.run_sync(Base.metadata.create_all)
-        # Add vector column if not exists
-        try:
-            await conn.execute(text(
-                "ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS embedding vector(1024)"
-            ))
-        except Exception:
-            pass
-        # Add notification_email_address column if not exists
-        try:
-            await conn.execute(text(
-                "ALTER TABLE users ADD COLUMN IF NOT EXISTS notification_email_address VARCHAR(255) DEFAULT ''"
-            ))
-        except Exception:
-            pass
-        # 自选股分池: watchlist_items.pool_type (analysis|trading) + 唯一约束改为含 pool_type
-        try:
-            await conn.execute(text(
-                "ALTER TABLE watchlist_items ADD COLUMN IF NOT EXISTS pool_type VARCHAR(20) DEFAULT 'analysis' NOT NULL"
-            ))
-        except Exception:
-            pass
-        try:
-            await conn.execute(text("ALTER TABLE watchlist_items DROP CONSTRAINT IF EXISTS uq_watchlist_stock"))
-        except Exception:
-            pass
-        try:
-            await conn.execute(text(
-                "ALTER TABLE watchlist_items ADD CONSTRAINT uq_watchlist_stock_pool "
-                "UNIQUE (watchlist_id, stock_code, pool_type)"
-            ))
-        except Exception:
-            pass
+
+    # 幂等迁移: 逐条独立执行 (各自 begin), 互不影响
+    migrations = [
+        "ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS embedding vector(1024)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS notification_email_address VARCHAR(255) DEFAULT ''",
+        "ALTER TABLE watchlist_items ADD COLUMN IF NOT EXISTS pool_type VARCHAR(20) DEFAULT 'analysis' NOT NULL",
+        "ALTER TABLE watchlist_items DROP CONSTRAINT IF EXISTS uq_watchlist_stock",
+        # 该约束无 IF NOT EXISTS, 第二次起会报已存在 — 独立事务保证不影响后续迁移
+        "ALTER TABLE watchlist_items ADD CONSTRAINT uq_watchlist_stock_pool "
+        "UNIQUE (watchlist_id, stock_code, pool_type)",
         # 量化策略: 应用范围 + 自动执行 (合并交易策略/量化模块)
-        for ddl in (
-            "ALTER TABLE quant_strategies ADD COLUMN IF NOT EXISTS apply_scope VARCHAR(20) DEFAULT 'watchlist'",
-            "ALTER TABLE quant_strategies ADD COLUMN IF NOT EXISTS apply_target VARCHAR(100) DEFAULT ''",
-            "ALTER TABLE quant_strategies ADD COLUMN IF NOT EXISTS auto_execute BOOLEAN DEFAULT FALSE",
-            "ALTER TABLE quant_strategies ADD COLUMN IF NOT EXISTS scheduled_task_id VARCHAR(64) DEFAULT ''",
-        ):
-            try:
+        "ALTER TABLE quant_strategies ADD COLUMN IF NOT EXISTS apply_scope VARCHAR(20) DEFAULT 'watchlist'",
+        "ALTER TABLE quant_strategies ADD COLUMN IF NOT EXISTS apply_target VARCHAR(100) DEFAULT ''",
+        "ALTER TABLE quant_strategies ADD COLUMN IF NOT EXISTS auto_execute BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE quant_strategies ADD COLUMN IF NOT EXISTS scheduled_task_id VARCHAR(64) DEFAULT ''",
+    ]
+    for ddl in migrations:
+        try:
+            async with engine.begin() as conn:
                 await conn.execute(text(ddl))
-            except Exception:
-                pass
+        except Exception:
+            pass
