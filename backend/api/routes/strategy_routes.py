@@ -232,6 +232,33 @@ async def internal_save_quant(req: _InternalQuantSave, db: AsyncSession = Depend
     return {"id": str(s.id), "name": s.name, "status": "created", "module": "quant"}
 
 
+class _InternalListReq(BaseModel):
+    token: str = ""
+    actor_id: str = ""
+
+
+@router.post("/internal/list")
+async def internal_list_strategies(req: _InternalListReq, db: AsyncSession = Depends(get_db)):
+    """Agent 调用: 列出该用户【量化策略】里已保存/生成的全部策略 (供 AI 助手展示)。
+    与 list_quant_templates(仅预置模板) 区分: 这里返回用户实际拥有的策略。"""
+    user = await resolve_internal_actor(req.token, req.actor_id, db)
+    res = await db.execute(
+        select(QuantStrategy).where(QuantStrategy.user_id == user.id).order_by(QuantStrategy.updated_at.desc())
+    )
+    strategies = res.scalars().all()
+    return {
+        "count": len(strategies),
+        "strategies": [{
+            "id": str(s.id), "name": s.name, "description": s.description,
+            "template_name": s.template_name, "status": s.status.value,
+            "apply_scope": getattr(s, "apply_scope", "watchlist") or "watchlist",
+            "apply_target": getattr(s, "apply_target", "") or "",
+            "auto_execute": bool(getattr(s, "auto_execute", False)),
+            "performance_metrics": s.performance_metrics or {},
+        } for s in strategies],
+    }
+
+
 @router.post("/quant/backtest")
 async def run_strategy_backtest(
     request: BacktestRequest,

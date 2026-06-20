@@ -390,6 +390,15 @@ async def place_simulated_order(args: dict[str, Any]) -> dict[str, Any]:
     })
 
 
+@tool("list_my_strategies",
+      "列出当前用户【量化策略】模块里已保存/已生成的策略 (含预置模板生成的和AI生成的, 带应用范围/自动执行状态/最近绩效)。"
+      "当用户问'我有哪些量化策略/列出我的策略/我保存了什么策略'时调用。"
+      "注意: list_quant_templates 只列预置模板, 本工具才列用户实际拥有的策略。",
+      {})
+async def list_my_strategies(args: dict[str, Any]) -> dict[str, Any]:
+    return await _run(_persist, path="/api/strategy/internal/list", payload={})
+
+
 # ═══════════════════════════════════════════════════════
 # In-process MCP Server: 所有证券工具
 # ═══════════════════════════════════════════════════════
@@ -411,6 +420,8 @@ ALL_TOOLS = [
     # persistence (写入业务模块)
     save_trading_strategy, save_quant_strategy, add_to_watchlist,
     save_analysis_report, save_document, create_scheduled_task, place_simulated_order,
+    # query (读取用户业务数据)
+    list_my_strategies,
 ]
 
 SERVER_NAME = "securities"
@@ -439,12 +450,12 @@ TOOL_GROUPS: dict[str, list[str]] = {
     "trading": [tool_name(n) for n in
                 ["execute_simulated_order", "generate_trading_signal", "calculate_position_size",
                  "evaluate_strategy_conditions"]],
-    "quant": [tool_name(n) for n in ["run_backtest", "list_quant_templates", "calculate_performance_metrics"]],
+    "quant": [tool_name(n) for n in ["run_backtest", "list_quant_templates", "calculate_performance_metrics", "list_my_strategies"]],
     "notification": [tool_name(n) for n in ["send_trading_signal_notification", "format_daily_report"]],
     "persistence": [tool_name(n) for n in
                     ["save_trading_strategy", "save_quant_strategy", "add_to_watchlist",
                      "save_analysis_report", "save_document", "create_scheduled_task",
-                     "place_simulated_order"]],
+                     "place_simulated_order", "list_my_strategies"]],
 }
 
 
