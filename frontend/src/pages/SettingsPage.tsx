@@ -306,8 +306,8 @@ function FeishuConfig() {
         {config?.configured ? `已配置 (App: ${config.app_id})` : '未配置'}
       </div>
 
-      {/* Enable/disable toggle (configured 时显示) */}
-      {config?.configured && (
+      {/* Enable/disable toggle (始终显示) */}
+      {config && (
         <div className="flex items-center justify-between px-3 py-2.5 rounded-lg mb-4 bg-surface-hover border border-surface-border">
           <div>
             <p className="text-sm text-gray-200">飞书 IM 接入</p>
