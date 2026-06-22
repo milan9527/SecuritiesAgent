@@ -216,8 +216,18 @@ async def run_task_now(
     if not task:
         return {"error": "任务不存在"}
 
+    # 去重: 同一任务正在运行时 (cron 或上一次手动触发未结束), 拒绝重复执行,
+    # 避免双击/SSE 重连/重复请求导致跑两次并发两封邮件。锁 TTL 覆盖整段运行 (见 _execute_task)。
+    from services.task_scheduler import _acquire_task_lock
+    if not await _acquire_task_lock(str(task_db_id := task.id)):
+        from fastapi.responses import StreamingResponse as _SR
+        import json as _jj
+        async def _busy():
+            yield f"data: {_jj.dumps({'type':'result','result':'⚠️ 该任务正在运行中, 请等待本次完成后再试 (避免重复执行)。'}, ensure_ascii=False)}\n\n"
+        return _SR(_busy(), media_type="text/event-stream",
+                   headers={"Cache-Control": "no-cache, no-store", "X-Accel-Buffering": "no"})
+
     task_prompt = task.prompt
-    task_db_id = task.id
     task_name = task.name
     task_email = task.notification_email
     task_notify = getattr(task, "notify_enabled", True)
@@ -226,11 +236,11 @@ async def run_task_now(
     # Inject current date and conditionally load watchlist
     try:
         from db.models import Watchlist, WatchlistItem
-        from datetime import datetime as _dt
         from api.user_context import _needs_watchlist
+        from config.timeutil import cst_str
 
         task_prompt = (
-            f"[当前日期: {_dt.now().strftime('%Y年%m月%d日 %H:%M')}]\n"
+            f"[当前日期: {cst_str('%Y年%m月%d日 %H:%M')} (北京时间)]\n"
             f"[用户: {current_user.full_name or current_user.username}, "
             f"风险偏好: {current_user.risk_preference}]\n"
         )
@@ -329,7 +339,7 @@ async def run_task_now(
                 from db.models import Document
                 doc = Document(
                     user_id=user_id,
-                    title=f"[定期任务] {task_name} - {datetime.utcnow().strftime('%Y-%m-%d')}",
+                    title=f"[定期任务] {task_name} - {__import__('config.timeutil', fromlist=['cst_str']).cst_str('%Y-%m-%d')}",
                     category="task",
                     content=response,
                     file_type="md",
@@ -348,6 +358,13 @@ async def run_task_now(
                 await _send_task_notification(task_name, response, task_email)
             except Exception as e:
                 print(f"[Scheduler] SNS notification failed: {e}")
+
+        # 释放去重锁 (本次手动运行结束), 允许用户随后再次手动运行
+        try:
+            from services.task_scheduler import _release_task_lock
+            await _release_task_lock(str(task_db_id))
+        except Exception:
+            pass
 
         yield f"data: {_j.dumps({'type': 'result', 'result': response[:3000]}, ensure_ascii=False)}\n\n"
 
@@ -671,7 +688,7 @@ async def _send_task_notification(task_name: str, result: str, email: str):
       <tr><td colspan="2" style="height:6px;"></td></tr>
       <tr>
         <td style="padding:10px 14px;background:#f8f9fa;border-radius:8px 0 0 8px;color:#6b7280;font-size:13px;font-weight:500;">时间</td>
-        <td style="padding:10px 14px;background:#f8f9fa;border-radius:0 8px 8px 0;font-size:13px;color:#374151;">{datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}</td>
+        <td style="padding:10px 14px;background:#f8f9fa;border-radius:0 8px 8px 0;font-size:13px;color:#374151;">{__import__('config.timeutil', fromlist=['cst_str']).cst_str('%Y-%m-%d %H:%M')} (北京时间)</td>
       </tr>
     </table>
     <div style="border-top:1px solid #e5e7eb;padding-top:24px;font-size:14px;line-height:1.8;color:#374151;">

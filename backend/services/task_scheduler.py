@@ -144,10 +144,19 @@ async def _acquire_task_lock(task_id: str) -> bool:
         # Redis 不可用: 单实例兜底, 允许执行
         print(f"[Scheduler] Redis lock failed ({e}), proceeding anyway")
         return True
-    # 注意: 故意不主动释放锁 —— 让它按 TTL 过期。这样在 TTL 窗口内的任何重复触发
-    # (EventBridge/Lambda at-least-once 重投递、多容器并发) 都会被去重, 一次触发只发一封邮件。
-    # 定时 cron 每天才触发一次 (间隔 24h ≫ 20min), 不会被误挡; 手动"立即运行"走另一条
-    # 内联路径 (/{task_id}/run), 不经此锁, 不受影响。
+    # 说明: cron 路径 (_execute_task) 故意不主动释放锁 —— 让它按 TTL 过期, 这样窗口内的
+    # 重复触发 (EventBridge/Lambda at-least-once 重投递、多容器并发) 都被去重。
+    # 手动"立即运行" (/{task_id}/run) 也用此锁去重双击/重连, 但会在本次执行结束时
+    # 调用 _release_task_lock 主动释放, 以便用户随后能合法地再次手动运行。
+
+
+async def _release_task_lock(task_id: str) -> None:
+    """释放任务锁 (供手动运行结束时调用)。"""
+    try:
+        from db.redis_client import redis_client
+        await redis_client.delete(_task_lock_key(task_id))
+    except Exception:
+        pass
 
 
 async def _execute_task(task_id: str):
@@ -220,7 +229,7 @@ async def _execute_task(task_id: str):
             # Save to documents
             doc = Document(
                 user_id=user.id,
-                title=f"[定期任务] {task.name} - {datetime.utcnow().strftime('%Y-%m-%d')}",
+                title=f"[定期任务] {task.name} - {__import__('config.timeutil', fromlist=['cst_str']).cst_str('%Y-%m-%d')}",
                 category="task",
                 content=response,
                 file_type="md",
@@ -262,9 +271,10 @@ async def _build_task_prompt(task: ScheduledTask, user: User, db) -> str:
     Scheduled tasks always get full user context (watchlist + positions).
     """
     from db.models import Portfolio, Position
+    from config.timeutil import cst_str
 
     parts = [
-        f"[当前日期: {datetime.now().strftime('%Y年%m月%d日 %H:%M')}]",
+        f"[当前日期: {cst_str('%Y年%m月%d日 %H:%M')} (北京时间)]",
         f"[用户: {user.full_name or user.username}, 风险偏好: {user.risk_preference}]",
     ]
 
