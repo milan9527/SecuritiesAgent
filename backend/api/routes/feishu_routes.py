@@ -334,7 +334,7 @@ class FeishuConfigRequest(BaseModel):
     app_id: str = ""
     app_secret: str = ""
     verification_token: str = ""
-    encrypt_key: str = ""
+    encrypt_key: Optional[str] = None  # None=不修改; ""=清除; 非空=设置
     enabled: Optional[bool] = None  # 飞书 IM 开关; None=不修改
 
 
@@ -356,8 +356,12 @@ async def save_feishu_config(
         config["app_secret"] = request.app_secret
     if request.verification_token:
         config["verification_token"] = request.verification_token
-    if request.encrypt_key:
-        config["encrypt_key"] = request.encrypt_key
+    if request.encrypt_key is not None:
+        # ""=清除加密密钥; 非空=设置
+        if request.encrypt_key:
+            config["encrypt_key"] = request.encrypt_key
+        else:
+            config.pop("encrypt_key", None)
     if request.enabled is not None:
         config["enabled"] = request.enabled
     config.setdefault("enabled", True)

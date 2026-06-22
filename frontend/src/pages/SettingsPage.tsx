@@ -268,7 +268,12 @@ function FeishuConfig() {
   const handleSave = async () => {
     setSaving(true)
     try {
-      await api.post('/api/feishu/config', form)
+      // 只发非空字段; encrypt_key 留空时不发送 (后端 None=不修改, 避免误清除)
+      const payload: any = {}
+      for (const k of ['app_id', 'app_secret', 'verification_token', 'encrypt_key'] as const) {
+        if ((form as any)[k]) payload[k] = (form as any)[k]
+      }
+      await api.post('/api/feishu/config', payload)
       toast.success('飞书配置已保存')
       api.get('/api/feishu/config').then(r => setConfig(r.data))
     } catch (err: any) {
