@@ -37,30 +37,61 @@ _settings = get_settings()
 # Feishu Webhook - 接收消息
 # ═══════════════════════════════════════════════════════
 
+def _feishu_decrypt(encrypt: str, key: str) -> dict:
+    """解密飞书加密事件 (AES-256-CBC, key = sha256(encrypt_key), iv 为密文前16字节)。"""
+    import base64
+    import hashlib
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    cipher_bytes = base64.b64decode(encrypt)
+    aes_key = hashlib.sha256(key.encode("utf-8")).digest()
+    iv, ct = cipher_bytes[:16], cipher_bytes[16:]
+    decryptor = Cipher(algorithms.AES(aes_key), modes.CBC(iv)).decryptor()
+    plain = decryptor.update(ct) + decryptor.finalize()
+    plain = plain[: -plain[-1]]  # 去 PKCS7 padding
+    return json.loads(plain.decode("utf-8"))
+
+
 @router.post("/webhook")
 async def feishu_webhook(request: Request):
-    """飞书事件回调入口
-    处理: URL验证 + 消息接收 + Agent回复
+    """飞书事件回调入口: URL验证 + 消息接收 + Agent回复。
+    重要: 始终返回 200 —— CloudFront 把 403 重写成 index.html, 且飞书对非200会判定回调失败。
+    支持加密 (event subscription 开了加密策略时 body 为 {"encrypt": ...})。
     """
-    body = await request.json()
+    config = await _load_feishu_config()
+    try:
+        body = await request.json()
+    except Exception:
+        return {"code": 0, "msg": "ok"}
 
-    # 1. URL Verification (飞书首次配置时的验证请求)
+    # 0. 若为加密事件, 先用 encrypt_key 解密成明文 body
+    if isinstance(body, dict) and "encrypt" in body:
+        enc_key = config.get("encrypt_key", "")
+        if not enc_key:
+            print("[Feishu] received encrypted event but no encrypt_key configured")
+            return {"code": 0, "msg": "no encrypt_key"}
+        try:
+            body = _feishu_decrypt(body["encrypt"], enc_key)
+        except Exception as e:
+            print(f"[Feishu] decrypt failed: {e}")
+            return {"code": 0, "msg": "decrypt failed"}
+
+    # 1. URL Verification (首次配置验证; 可能是加密后的明文)
     if body.get("type") == "url_verification":
-        challenge = body.get("challenge", "")
-        return {"challenge": challenge}
+        return {"challenge": body.get("challenge", "")}
 
     # 2. Event callback
     header = body.get("header", {})
     event = body.get("event", {})
 
-    # Verify token
+    # Verify token (校验失败也返回 200, 仅记录 —— 避免 CloudFront 403→index.html / 飞书判失败)
     token = header.get("token", "")
-    config = await _load_feishu_config()
     expected_token = config.get("verification_token", "")
     if expected_token and token != expected_token:
-        raise HTTPException(status_code=403, detail="Invalid verification token")
+        print(f"[Feishu] verification token mismatch (got '{token[:6]}…')")
+        return {"code": 0, "msg": "token mismatch"}
 
-    # 飞书 IM 开关: 关闭时只回 200 (满足飞书回调要求), 不处理/不调用 Agent/不回消息
+    # 飞书 IM 开关: 关闭时只回 200, 不处理
     if not config.get("enabled", True):
         return {"code": 0, "msg": "feishu disabled"}
 
@@ -294,6 +325,7 @@ async def get_feishu_config():
         "configured": bool(app_id),
         "enabled": bool(config.get("enabled", True)),
         "app_id": app_id[:8] + "..." if app_id else "",
+        "has_encrypt_key": bool(config.get("encrypt_key", "")),
         "webhook_url": "/api/feishu/webhook",
     }
 
@@ -302,6 +334,7 @@ class FeishuConfigRequest(BaseModel):
     app_id: str = ""
     app_secret: str = ""
     verification_token: str = ""
+    encrypt_key: str = ""
     enabled: Optional[bool] = None  # 飞书 IM 开关; None=不修改
 
 
@@ -323,6 +356,8 @@ async def save_feishu_config(
         config["app_secret"] = request.app_secret
     if request.verification_token:
         config["verification_token"] = request.verification_token
+    if request.encrypt_key:
+        config["encrypt_key"] = request.encrypt_key
     if request.enabled is not None:
         config["enabled"] = request.enabled
     config.setdefault("enabled", True)
@@ -368,5 +403,6 @@ async def _load_feishu_config() -> dict:
             "app_id": app_id,
             "app_secret": getattr(_settings, "FEISHU_APP_SECRET", ""),
             "verification_token": getattr(_settings, "FEISHU_VERIFICATION_TOKEN", ""),
+            "encrypt_key": getattr(_settings, "FEISHU_ENCRYPT_KEY", ""),
         }
     return {}

@@ -258,7 +258,7 @@ export default function SettingsPage() {
 
 function FeishuConfig() {
   const [config, setConfig] = useState<any>(null)
-  const [form, setForm] = useState({ app_id: '', app_secret: '', verification_token: '' })
+  const [form, setForm] = useState({ app_id: '', app_secret: '', verification_token: '', encrypt_key: '' })
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -336,6 +336,12 @@ function FeishuConfig() {
           <label className="text-xs text-gray-400 mb-1 block">Verification Token</label>
           <input className="input-field text-sm" value={form.verification_token} onChange={e => setForm({...form, verification_token: e.target.value})}
             placeholder="事件订阅验证Token" />
+        </div>
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">Encrypt Key (加密策略, 启用了才填)</label>
+          <input className="input-field text-sm" type="password" value={form.encrypt_key} onChange={e => setForm({...form, encrypt_key: e.target.value})}
+            placeholder="事件订阅 Encrypt Key (未开启加密则留空)" />
+          {config?.has_encrypt_key && <p className="text-[10px] text-green-500 mt-1">已配置加密密钥</p>}
         </div>
         <button onClick={handleSave} disabled={saving || !form.app_id} className="btn-primary text-sm disabled:opacity-50">
           {saving ? '保存中...' : '保存配置'}
