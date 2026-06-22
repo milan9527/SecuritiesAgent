@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Briefcase, ArrowUpRight, ArrowDownRight } from 'lucide-react'
+import { useEffect, useState, useRef } from 'react'
+import { Briefcase, ArrowUpRight, ArrowDownRight, RefreshCw } from 'lucide-react'
 import StockSearch from '../components/StockSearch'
 import api from '../services/api'
 import toast from 'react-hot-toast'
@@ -10,14 +10,23 @@ export default function PortfolioPage() {
   const [submitting, setSubmitting] = useState(false)
   const [realtimePrice, setRealtimePrice] = useState<any>(null)
   const [orderBook, setOrderBook] = useState<any>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const pollTimer = useRef<any>(null)
 
-  useEffect(() => { loadPortfolios() }, [])
+  useEffect(() => {
+    loadPortfolios()
+    // 盘中现价/盈亏每30秒自动刷新
+    pollTimer.current = setInterval(() => loadPortfolios(true), 30000)
+    return () => { if (pollTimer.current) clearInterval(pollTimer.current) }
+  }, [])
 
-  const loadPortfolios = async () => {
+  const loadPortfolios = async (silent = false) => {
+    if (!silent) setRefreshing(true)
     try {
       const res = await api.get('/api/portfolio/')
       setPortfolios(res.data)
     } catch {}
+    if (!silent) setRefreshing(false)
   }
 
   const handleStockSelect = async (stock: { code: string; name: string; market: string; full_code: string }) => {
@@ -60,9 +69,15 @@ export default function PortfolioPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-        <Briefcase className="w-6 h-6 text-accent-gold" /> 模拟盘
-      </h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+          <Briefcase className="w-6 h-6 text-accent-gold" /> 模拟盘
+          <span className="text-xs font-normal text-gray-500">现价/盈亏实时刷新</span>
+        </h1>
+        <button onClick={() => loadPortfolios()} className="btn-secondary flex items-center gap-2 text-sm">
+          <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} /> 刷新现价
+        </button>
+      </div>
 
       {portfolio && (
         <>

@@ -3,6 +3,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,8 +13,35 @@ from db.models import User, Portfolio, Position, Order, OrderSide, OrderStatus
 from api.auth import get_current_user
 from api.internal_auth import resolve_internal_actor
 from api.schemas import OrderCreate, PortfolioResponse
+from agents.skills.market_data_skill import get_stock_batch_quotes
 
 router = APIRouter(prefix="/api/portfolio", tags=["模拟盘"])
+
+
+async def _refresh_position_prices(positions: list[Position]) -> None:
+    """用实时行情刷新持仓的现价/市值/盈亏 (原地更新 ORM 对象, 调用方负责 commit)。
+    行情拉取在线程池, 不阻塞事件循环; 单只取数失败则保留原现价。"""
+    codes = sorted({p.stock_code for p in positions if p.stock_code})
+    if not codes:
+        return
+    try:
+        quotes = await asyncio.to_thread(get_stock_batch_quotes, codes, "tencent")
+    except Exception:
+        return
+    price_map: dict[str, float] = {}
+    for q in quotes or []:
+        raw = (q.get("code") or "").replace("sh", "").replace("sz", "")
+        cp = q.get("current_price") or 0
+        if raw and cp:
+            price_map[raw] = float(cp)
+    for p in positions:
+        cp = price_map.get(p.stock_code)
+        if not cp:
+            continue  # 取不到行情则不动, 避免把现价清零
+        p.current_price = cp
+        p.market_value = round(cp * p.quantity, 2)
+        p.profit = round((cp - p.avg_cost) * p.quantity, 2)
+        p.profit_pct = round((cp - p.avg_cost) / p.avg_cost * 100, 2) if p.avg_cost else 0.0
 
 
 async def _execute_order(
@@ -98,12 +126,22 @@ async def get_portfolios(
     portfolios = result.scalars().all()
 
     responses = []
+    dirty = False
     for p in portfolios:
         # 获取持仓
         pos_result = await db.execute(
             select(Position).where(Position.portfolio_id == p.id)
         )
         positions = pos_result.scalars().all()
+
+        # 用实时行情刷新现价/盈亏 (而非展示成交时的旧价)
+        if positions:
+            await _refresh_position_prices(list(positions))
+            total_market_value = sum((p2.market_value or 0) for p2 in positions)
+            p.total_value = round(p.available_cash + total_market_value, 2)
+            p.total_profit = round(p.total_value - p.initial_capital, 2)
+            p.total_profit_pct = round(p.total_profit / p.initial_capital * 100, 2) if p.initial_capital else 0.0
+            dirty = True
 
         # 获取最近订单
         order_result = await db.execute(
@@ -143,6 +181,12 @@ async def get_portfolios(
                 "created_at": o.created_at.isoformat(),
             } for o in orders],
         ))
+
+    if dirty:
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
 
     return responses
 

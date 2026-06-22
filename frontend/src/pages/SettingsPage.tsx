@@ -277,6 +277,17 @@ function FeishuConfig() {
     setSaving(false)
   }
 
+  const toggleEnabled = async () => {
+    const next = !(config?.enabled !== false)
+    try {
+      await api.post('/api/feishu/config', { enabled: next })
+      toast.success(next ? '飞书 IM 已启用' : '飞书 IM 已禁用')
+      api.get('/api/feishu/config').then(r => setConfig(r.data))
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || '操作失败')
+    }
+  }
+
   return (
     <div className="card">
       <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
@@ -294,6 +305,20 @@ function FeishuConfig() {
         <span className={`w-2 h-2 rounded-full ${config?.configured ? 'bg-green-400' : 'bg-gray-600'}`} />
         {config?.configured ? `已配置 (App: ${config.app_id})` : '未配置'}
       </div>
+
+      {/* Enable/disable toggle (configured 时显示) */}
+      {config?.configured && (
+        <div className="flex items-center justify-between px-3 py-2.5 rounded-lg mb-4 bg-surface-hover border border-surface-border">
+          <div>
+            <p className="text-sm text-gray-200">飞书 IM 接入</p>
+            <p className="text-[10px] text-gray-500 mt-0.5">禁用后保留配置, 但不再响应飞书消息</p>
+          </div>
+          <button onClick={toggleEnabled}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${config?.enabled !== false ? 'bg-green-600' : 'bg-gray-600'}`}>
+            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${config?.enabled !== false ? 'translate-x-6' : 'translate-x-1'}`} />
+          </button>
+        </div>
+      )}
 
       {/* Config form */}
       <div className="space-y-3">

@@ -60,6 +60,10 @@ async def feishu_webhook(request: Request):
     if expected_token and token != expected_token:
         raise HTTPException(status_code=403, detail="Invalid verification token")
 
+    # 飞书 IM 开关: 关闭时只回 200 (满足飞书回调要求), 不处理/不调用 Agent/不回消息
+    if not config.get("enabled", True):
+        return {"code": 0, "msg": "feishu disabled"}
+
     # Handle message event
     event_type = header.get("event_type", "")
     if event_type == "im.message.receive_v1":
@@ -288,6 +292,7 @@ async def get_feishu_config():
     app_id = config.get("app_id", "")
     return {
         "configured": bool(app_id),
+        "enabled": bool(config.get("enabled", True)),
         "app_id": app_id[:8] + "..." if app_id else "",
         "webhook_url": "/api/feishu/webhook",
     }
@@ -297,6 +302,7 @@ class FeishuConfigRequest(BaseModel):
     app_id: str = ""
     app_secret: str = ""
     verification_token: str = ""
+    enabled: Optional[bool] = None  # 飞书 IM 开关; None=不修改
 
 
 @router.post("/config")
@@ -304,17 +310,22 @@ async def save_feishu_config(
     request: FeishuConfigRequest,
     current_user: User = Depends(get_current_user),
 ):
-    """保存飞书配置, 自动绑定当前登录用户"""
+    """保存飞书配置, 自动绑定当前登录用户。
+    合并已有配置: 只更新传入的非空字段, 单独切换 enabled 不会清掉已配置的 app_id/secret。"""
     from db.redis_client import cache_set
     import json
 
-    config = {}
+    # 合并已有配置, 避免只切开关时丢失凭据
+    config = dict(await _load_feishu_config())
     if request.app_id:
         config["app_id"] = request.app_id
     if request.app_secret:
         config["app_secret"] = request.app_secret
     if request.verification_token:
         config["verification_token"] = request.verification_token
+    if request.enabled is not None:
+        config["enabled"] = request.enabled
+    config.setdefault("enabled", True)
     # Auto-bind to current logged-in user
     config["bind_user_id"] = str(current_user.id)
     config["bind_username"] = current_user.username
@@ -330,7 +341,8 @@ async def save_feishu_config(
             await redis_client.delete(*keys)
     except Exception:
         pass
-    return {"success": True, "configured": bool(config.get("app_id")), "bound_user": current_user.username}
+    return {"success": True, "configured": bool(config.get("app_id")),
+            "enabled": bool(config.get("enabled", True)), "bound_user": current_user.username}
 
 
 async def _load_feishu_config() -> dict:
