@@ -23,9 +23,12 @@ def _normalize_code(stock_code: str) -> str:
     return f"sz{stock_code}"
 
 
-def _parse_tencent_fields(fields: list[str]) -> dict:
-    """解析腾讯行情字段数组为标准 dict。"""
-    code = fields[0].split("_")[-1] if fields and fields[0] else ""
+def _parse_tencent_fields(fields: list[str], code: str = "") -> dict:
+    """解析腾讯行情字段数组为标准 dict。
+    code 由调用方传入 (来自 v_<code>= 变量名或归一化的输入); fields[0] 不是代码。
+    兜底: 用 fields[2] (腾讯把纯代码放在第 3 个字段)。"""
+    if not code:
+        code = (fields[2] if len(fields) > 2 and fields[2] else "")
     return {
         "code": code, "name": fields[1], "source": "tencent",
         "current_price": float(fields[3]) if fields[3] else 0,
@@ -59,7 +62,7 @@ def _quote_tencent(stock_code: str) -> dict:
     fields = match.group(1).split("~")
     if len(fields) < 45:
         return {"error": "腾讯行情数据格式异常"}
-    return _parse_tencent_fields(fields)
+    return _parse_tencent_fields(fields, code)
 
 
 def _batch_quote_tencent(stock_codes: list[str]) -> list[dict]:
@@ -75,12 +78,14 @@ def _batch_quote_tencent(stock_codes: list[str]) -> list[dict]:
             resp = httpx.get(url, timeout=12)
             resp.encoding = "gbk"
             for line in resp.text.split(";"):
-                m = re.search(r'"(.+?)"', line)
+                # 每行形如 v_sh600519="1~XD贵州茅~600519~...": 代码取自变量名 v_<code>
+                m = re.search(r'v_(\w+)="(.+?)"', line)
                 if not m:
                     continue
-                fields = m.group(1).split("~")
+                code = m.group(1)
+                fields = m.group(2).split("~")
                 if len(fields) >= 45:
-                    out.append(_parse_tencent_fields(fields))
+                    out.append(_parse_tencent_fields(fields, code))
         except Exception as e:  # noqa: BLE001
             for c in chunk:
                 out.append({"code": c, "error": f"腾讯批量行情失败: {str(e)[:80]}"})

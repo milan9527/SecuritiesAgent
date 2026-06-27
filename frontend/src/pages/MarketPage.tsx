@@ -39,6 +39,12 @@ export default function MarketPage() {
     return (pools[pk]?.items || []).map((it: any) => it.stock_code).filter(Boolean)
   }, [pools])
 
+  // code → source(manual/ai) 映射 (用于行情表显示人工/AI标签 + 控制是否可手动删除)
+  const srcOf = useCallback((pk: PoolKey, rawCode: string) => {
+    const it = (pools[pk]?.items || []).find((x: any) => (x.stock_code || '').replace(/^(sh|sz)/, '') === rawCode)
+    return it?.source || 'manual'
+  }, [pools])
+
   const loadPools = async () => {
     try {
       const [poolsRes, wlRes] = await Promise.all([
@@ -247,7 +253,12 @@ export default function MarketPage() {
                       <tr key={i} className="border-b border-surface-border/50 hover:bg-surface-hover transition-colors cursor-pointer"
                         onClick={() => { setSelectedStock({ ...q, _search: { code: rawCode, name: q.name, market: q.code?.startsWith('sh') ? 'sh' : 'sz', full_code: q.code } }); setShowKline(false) }}>
                         <td className="py-2.5 px-2 font-mono text-gray-400 text-xs">{rawCode}</td>
-                        <td className="py-2.5 px-2 text-white font-medium">{q.name}</td>
+                        <td className="py-2.5 px-2 text-white font-medium">
+                          {q.name}
+                          {srcOf(activePool, rawCode) === 'ai'
+                            ? <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-primary-500/20 text-primary-300 align-middle">AI</span>
+                            : <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-surface-hover text-gray-500 align-middle">人工</span>}
+                        </td>
                         <td className={`py-2.5 px-2 text-right font-mono ${(q.change_pct||0) > 0 ? 'stock-up' : (q.change_pct||0) < 0 ? 'stock-down' : 'text-gray-300'}`}>{q.current_price?.toFixed(2)}</td>
                         <td className={`py-2.5 px-2 text-right font-mono ${(q.change_pct||0) > 0 ? 'stock-up' : (q.change_pct||0) < 0 ? 'stock-down' : 'text-gray-300'}`}>{(q.change_pct||0) > 0 ? '+' : ''}{q.change_pct?.toFixed(2)}%</td>
                         <td className="py-2.5 px-2 text-right text-gray-500 font-mono text-xs">{q.volume?.toLocaleString()}</td>

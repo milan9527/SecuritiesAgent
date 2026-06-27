@@ -52,6 +52,12 @@ async def init_db():
         "ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS embedding vector(1024)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS notification_email_address VARCHAR(255) DEFAULT ''",
         "ALTER TABLE watchlist_items ADD COLUMN IF NOT EXISTS pool_type VARCHAR(20) DEFAULT 'analysis' NOT NULL",
+        # 自选股来源: manual(人工)/ai(Agent管理)。已有数据默认 manual, 不动用户人工添加的。
+        "ALTER TABLE watchlist_items ADD COLUMN IF NOT EXISTS source VARCHAR(10) DEFAULT 'manual' NOT NULL",
+        # 唯一约束改为含 source (人工/AI 同股票可共存)
+        "ALTER TABLE watchlist_items DROP CONSTRAINT IF EXISTS uq_watchlist_stock_pool",
+        "ALTER TABLE watchlist_items ADD CONSTRAINT uq_watchlist_stock_pool_src "
+        "UNIQUE (watchlist_id, stock_code, pool_type, source)",
         "ALTER TABLE watchlist_items DROP CONSTRAINT IF EXISTS uq_watchlist_stock",
         # 该约束无 IF NOT EXISTS, 第二次起会报已存在 — 独立事务保证不影响后续迁移
         "ALTER TABLE watchlist_items ADD CONSTRAINT uq_watchlist_stock_pool "

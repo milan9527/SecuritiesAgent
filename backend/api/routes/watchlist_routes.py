@@ -75,6 +75,7 @@ async def get_watchlists(
                 "stock_code": it.stock_code,
                 "stock_name": it.stock_name,
                 "pool_type": getattr(it, "pool_type", "analysis") or "analysis",
+                "source": getattr(it, "source", "manual") or "manual",
                 "added_reason": it.added_reason,
                 "target_price": it.target_price,
                 "stop_loss_price": it.stop_loss_price,
@@ -108,6 +109,7 @@ async def get_pools(
             "id": str(it.id), "stock_code": it.stock_code, "stock_name": it.stock_name,
             "added_reason": it.added_reason, "target_price": it.target_price,
             "stop_loss_price": it.stop_loss_price,
+            "source": getattr(it, "source", "manual") or "manual",
             "added_at": it.added_at.isoformat() if it.added_at else "",
         })
     pools["analysis"] = {"name": "分析股票池", "kind": "watchlist", "items": by_pool["analysis"]}
@@ -206,16 +208,19 @@ async def _get_or_create_default_watchlist(user: User, db: AsyncSession) -> Watc
 
 @router.post("/internal/add")
 async def internal_add_stock(req: _InternalAddItem, db: AsyncSession = Depends(get_db)):
-    """Agent 调用: 把选出的股票加入该用户的默认自选股池 (已存在则更新理由/目标价, 幂等)。"""
+    """Agent 调用: 把选出的股票加入用户自选股池, **只管理 source=ai 的项** (幂等更新)。
+    人工添加的 (source=manual) 一律不碰。"""
     user = await resolve_internal_actor(req.token, req.actor_id, db)
     wl = await _get_or_create_default_watchlist(user, db)
     pool = _norm_pool(req.pool_type)
 
+    # 仅在 AI 子集内查找/更新
     existing = await db.execute(
         select(WatchlistItem).where(
             WatchlistItem.watchlist_id == wl.id,
             WatchlistItem.stock_code == req.stock_code,
             WatchlistItem.pool_type == pool,
+            WatchlistItem.source == "ai",
         )
     )
     item = existing.scalar_one_or_none()
@@ -229,15 +234,46 @@ async def internal_add_stock(req: _InternalAddItem, db: AsyncSession = Depends(g
         if req.stop_loss_price is not None:
             item.stop_loss_price = req.stop_loss_price
         await db.commit()
-        return {"status": "updated", "stock_code": req.stock_code, "pool_type": pool, "watchlist": wl.name}
+        return {"status": "updated", "source": "ai", "stock_code": req.stock_code, "pool_type": pool}
 
     item = WatchlistItem(
         watchlist_id=wl.id, stock_code=req.stock_code, stock_name=req.stock_name, pool_type=pool,
+        source="ai",
         added_reason=req.added_reason, target_price=req.target_price, stop_loss_price=req.stop_loss_price,
     )
     db.add(item)
     await db.commit()
-    return {"status": "added", "stock_code": req.stock_code, "pool_type": pool, "watchlist": wl.name}
+    return {"status": "added", "source": "ai", "stock_code": req.stock_code, "pool_type": pool}
+
+
+class _InternalRemoveItem(BaseModel):
+    token: str = ""
+    actor_id: str = ""
+    stock_code: str
+    pool_type: str = "analysis"
+
+
+@router.post("/internal/remove")
+async def internal_remove_stock(req: _InternalRemoveItem, db: AsyncSession = Depends(get_db)):
+    """Agent 调用: 从自选股池移除一只股票, **只能移除 source=ai 的项** (人工添加的不可删)。"""
+    user = await resolve_internal_actor(req.token, req.actor_id, db)
+    wl = await _get_or_create_default_watchlist(user, db)
+    pool = _norm_pool(req.pool_type)
+    res = await db.execute(
+        select(WatchlistItem).where(
+            WatchlistItem.watchlist_id == wl.id,
+            WatchlistItem.stock_code == req.stock_code,
+            WatchlistItem.pool_type == pool,
+            WatchlistItem.source == "ai",
+        )
+    )
+    item = res.scalar_one_or_none()
+    if not item:
+        return {"status": "not_found", "stock_code": req.stock_code,
+                "note": "仅能移除 AI 管理的项 (人工添加的不受影响)"}
+    await db.delete(item)
+    await db.commit()
+    return {"status": "removed", "source": "ai", "stock_code": req.stock_code, "pool_type": pool}
 
 
 @router.post("/{watchlist_id}/add")
@@ -258,12 +294,13 @@ async def add_stock(
         raise HTTPException(status_code=404, detail="自选列表不存在")
 
     pool = _norm_pool(request.pool_type)
-    # 检查是否已存在 (同股票同池)
+    # 用户手动添加 = 人工(manual)。检查人工子集内是否已存在同股票
     existing = await db.execute(
         select(WatchlistItem).where(
             WatchlistItem.watchlist_id == wl.id,
             WatchlistItem.stock_code == request.stock_code,
             WatchlistItem.pool_type == pool,
+            WatchlistItem.source == "manual",
         )
     )
     if existing.scalar_one_or_none():
@@ -274,6 +311,7 @@ async def add_stock(
         stock_code=request.stock_code,
         stock_name=request.stock_name,
         pool_type=pool,
+        source="manual",
         added_reason=request.added_reason,
         target_price=request.target_price,
         stop_loss_price=request.stop_loss_price,

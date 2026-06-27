@@ -322,9 +322,9 @@ async def save_quant_strategy(args: dict[str, Any]) -> dict[str, Any]:
 
 
 @tool("add_to_watchlist",
-      "把一只股票加入用户的【自选股】。pool_type 指定股票池: 'analysis'=分析股票池(默认, 用于研究/关注), "
-      "'trading'=实际交易股票(用户真实持有/计划交易的)。为用户选股/推荐值得关注的标的→analysis; "
-      "确认用户实际买入/持有的标的→trading。附理由/目标价/止损价。",
+      "把一只股票加入用户自选股的【AI管理】子集 (source=ai)。pool_type: 'analysis'=分析股票池(默认), "
+      "'trading'=实际交易股票。为用户选股/推荐值得关注的标的→analysis。附理由/目标价/止损价。"
+      "注意: 你只能管理 AI 子集; 用户人工添加的股票 (manual) 不受影响、你也看不到/动不了。",
       {"stock_code": str, "stock_name": str, "added_reason": str,
        "target_price": float, "stop_loss_price": float, "pool_type": str})
 async def add_to_watchlist(args: dict[str, Any]) -> dict[str, Any]:
@@ -334,6 +334,17 @@ async def add_to_watchlist(args: dict[str, Any]) -> dict[str, Any]:
         "added_reason": args.get("added_reason", ""),
         "target_price": args.get("target_price"),
         "stop_loss_price": args.get("stop_loss_price"),
+        "pool_type": args.get("pool_type", "analysis"),
+    })
+
+
+@tool("remove_from_watchlist",
+      "从用户自选股的【AI管理】子集移除一只股票 (只能删 source=ai 的, 人工添加的删不了)。"
+      "当某只 AI 选入的股票不再符合条件时, 调用此工具清理, 保持 AI 自选股池有效。",
+      {"stock_code": str, "pool_type": str})
+async def remove_from_watchlist(args: dict[str, Any]) -> dict[str, Any]:
+    return await _run(_persist, path="/api/watchlist/internal/remove", payload={
+        "stock_code": args["stock_code"],
         "pool_type": args.get("pool_type", "analysis"),
     })
 
@@ -426,7 +437,7 @@ ALL_TOOLS = [
     # notification
     send_trading_signal_notification, format_daily_report,
     # persistence (写入业务模块)
-    save_trading_strategy, save_quant_strategy, add_to_watchlist,
+    save_trading_strategy, save_quant_strategy, add_to_watchlist, remove_from_watchlist,
     save_analysis_report, save_document, create_scheduled_task, place_simulated_order,
     # query (读取用户业务数据)
     list_my_strategies,
@@ -461,7 +472,7 @@ TOOL_GROUPS: dict[str, list[str]] = {
     "quant": [tool_name(n) for n in ["run_backtest", "list_quant_templates", "calculate_performance_metrics", "list_my_strategies"]],
     "notification": [tool_name(n) for n in ["send_trading_signal_notification", "format_daily_report"]],
     "persistence": [tool_name(n) for n in
-                    ["save_trading_strategy", "save_quant_strategy", "add_to_watchlist",
+                    ["save_trading_strategy", "save_quant_strategy", "add_to_watchlist", "remove_from_watchlist",
                      "save_analysis_report", "save_document", "create_scheduled_task",
                      "place_simulated_order", "list_my_strategies"]],
 }

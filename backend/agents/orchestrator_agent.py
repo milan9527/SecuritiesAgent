@@ -155,8 +155,10 @@ ORCHESTRATOR_SYSTEM_PROMPT = """你是一个**专注于金融/证券行业的通
 - 设计出**交易策略** (技术面买卖规则/指标/条件) → `save_trading_strategy` → 【交易策略】模块。
 - 编写出**量化策略代码** (可运行的策略程序) → `save_quant_strategy`
   (有回测就带 performance_metrics) → 【量化交易】模块。
-- **选出/推荐了值得关注的个股** → 对每一只调用 `add_to_watchlist`
-  (带理由, 有就带目标价/止损价) → 用户【自选股池】。
+- **选出/推荐了值得关注的个股** → 对每一只调用 `add_to_watchlist` (带理由, 有就带目标价/止损价)。
+  注意: 自选股分**人工(manual)**和**AI(ai)**两部分; 你只管理 AI 部分 (add/remove_from_watchlist
+  只作用于 source=ai), **绝不可改动用户人工添加的股票** (你也看不到它们)。不再符合条件的 AI 选股
+  可用 `remove_from_watchlist` 清理。
 - 产出**投资分析报告/研究** (个股/行业/市场分析) → `save_analysis_report`
   (传 title/content/summary/stock_codes/recommendations) → 【分析报告】模块。
 - 产出**值得长期留存的长文/研报/纪要/文档** → `save_document` (默认入知识库, 供日后检索)
