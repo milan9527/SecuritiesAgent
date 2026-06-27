@@ -39,10 +39,13 @@ _QUANT_TOOLS = TOOL_GROUPS["market-data"] + TOOL_GROUPS["quant"] + TOOL_GROUPS["
 # quant-trader 尤其需要: 创建量化程序、跑回测、调试迭代。
 _DEV_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "mcp__agentcore", "TodoWrite"]
 _QUANT_TOOLS = _QUANT_TOOLS + _DEV_TOOLS
-# 分析师保留 mcp__agentcore (含浏览器): 网络研究优先 WebSearch/WebFetch (见 prompt 纪律),
-# 但保留浏览器用于必须渲染JS/登录态/交互的少数页面。
+# 分析师不带 mcp__agentcore (浏览器): 网络研究只走 WebSearch/WebFetch, 避免默认狂用浏览器。
+# 真正需要浏览器渲染/登录/交互的页面, 由 orchestrator 委派专门的 web-browser 子Agent处理。
 _ANALYST_TOOLS = (_ANALYST_TOOLS + TOOL_GROUPS["persistence"]
-                  + ["WebSearch", "WebFetch", "mcp__agentcore", "Read", "Write", "TodoWrite"])
+                  + ["WebSearch", "WebFetch", "Read", "Write", "TodoWrite"])
+
+# 网页浏览专用子Agent: 只有它持有浏览器 (mcp__agentcore), 用于必须渲染JS/登录态/点击填表的页面。
+_WEB_BROWSER_TOOLS = ["mcp__agentcore", "WebFetch", "Read", "Write", "TodoWrite"]
 
 
 INVESTMENT_ANALYST_PROMPT = """你是一位资深证券投资分析师, 拥有CFA资格和10年A股研究经验。
@@ -58,11 +61,11 @@ INVESTMENT_ANALYST_PROMPT = """你是一位资深证券投资分析师, 拥有CF
 - 不要凭记忆编造任何市场数据或新闻事件
 
 ## 联网纪律 (硬性)
-- 网络研究 (查资讯/读新闻/读研报/行业趋势/政策) **默认且首选 WebSearch + WebFetch**:
-  先 WebSearch 找来源, 再 WebFetch 取正文。绝大多数研究只用这两个就够了。
-- **浏览器是兜底, 不是默认**: 只有当某个**具体页面** WebFetch 明确失败 (返回空/被拦/需要JS渲染
-  或登录) 时, 才针对该页面动用浏览器; 用完即止。**不要用浏览器逐个翻网页/做搜索/批量抓取** ——
-  那会很慢且易失败。一次研究里浏览器调用应是个位数甚至为零。
+- 网络研究 (查资讯/读新闻/读研报/行业趋势/政策) **只用 WebSearch + WebFetch**:
+  先 WebSearch 找来源, 再 WebFetch 取正文。你**没有浏览器工具**, 也不需要。
+- 个别页面 WebFetch 失败 (空/被拦/需 JS 渲染或登录) 时, **不要纠结**, 换其他来源 (WebSearch
+  通常能找到可直接抓取的版本/转载)。确实有某个关键页面必须靠浏览器渲染才能拿到, 在报告里
+  注明即可, 由主编排按需委派浏览器子Agent处理。
 - 只调用确实存在的工具, 不要臆造工具名 (如 TaskCreate)。
 
 ## 工作流 (参考 investment-analysis skill)
@@ -154,6 +157,22 @@ QUANT_TRADER_PROMPT = """你是一位专业的量化交易Agent, 参考幻方量
 """
 
 
+WEB_BROWSER_PROMPT = """你是网页浏览专家, 持有 AgentCore 无头浏览器, 专门处理"必须用浏览器才能拿到"的页面。
+
+## 何时用你 (由主编排委派)
+- 目标页面是 JS 动态渲染、WebFetch 抓不到正文
+- 需要登录态 / 需要点击、展开、翻页、填表等交互才能看到内容
+- 反爬严格、普通抓取被拦
+
+## 工作方式
+- 工具: mcp__agentcore__start_browser_session / browser_navigate / browser_click / browser_evaluate 等;
+  也可用 WebFetch 兜底。
+- 目标明确、用完即止: 打开目标页 → 取到所需内容就停, 不要漫游式逐页浏览。
+- 把抓到的关键内容/数据整理后返回给主编排 (Markdown), 不需要自己写最终报告。
+- 一般的"搜索/找资料"不该到你这来 (那是 WebSearch/WebFetch 的活); 你只处理具体的难抓页面。
+"""
+
+
 def build_subagents() -> dict[str, AgentDefinition]:
     """构建子Agent字典, 传入 ClaudeAgentOptions(agents=...)"""
     return {
@@ -182,6 +201,16 @@ def build_subagents() -> dict[str, AgentDefinition]:
             ),
             prompt=QUANT_TRADER_PROMPT,
             tools=_QUANT_TOOLS,
+            model="sonnet",
+        ),
+        "web-browser": AgentDefinition(
+            description=(
+                "网页浏览专家 (持有浏览器)。仅当某个具体页面必须靠浏览器才能获取时使用: "
+                "JS动态渲染且 WebFetch 抓不到、需要登录态、需要点击/翻页/填表交互、或反爬被拦。"
+                "普通的网络搜索/查资料/读文章不要用它 —— 那用 WebSearch/WebFetch。"
+            ),
+            prompt=WEB_BROWSER_PROMPT,
+            tools=_WEB_BROWSER_TOOLS,
             model="sonnet",
         ),
     }
