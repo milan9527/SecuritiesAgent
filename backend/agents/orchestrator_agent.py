@@ -347,7 +347,10 @@ def _build_options(session_id: str = "default", actor_id: str = "system") -> Cla
     ac_server = _agentcore_mcp_server()
     if ac_server:
         mcp_servers["agentcore"] = ac_server
-        # 允许官方 server 暴露的 browser + code_interpreter 全部工具
+        # 会话级允许 browser + code_interpreter 全部工具 (前缀)。注意: 这是"会话允许集",
+        # 浏览器工具必须在此允许, web-browser 子Agent 才能使用; 但"谁实际能用"由各子Agent
+        # 的 tools 字段精确控制 (analyst 无浏览器 / quant 仅代码 / web-browser 仅浏览器),
+        # 主编排自身按 prompt 优先委派 web-browser 而非自驱浏览器。
         extra_allowed.append("mcp__agentcore")
 
     opts = dict(

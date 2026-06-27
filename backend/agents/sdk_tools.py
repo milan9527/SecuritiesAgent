@@ -464,3 +464,27 @@ def all_tool_names() -> list[str]:
     for group in TOOL_GROUPS.values():
         names.extend(group)
     return names
+
+
+# AgentCore MCP 工具按能力拆分 (官方 server 同时暴露 browser + code_interpreter):
+#   - 浏览器工具仅授予专门的 web-browser 子Agent
+#   - 代码解释器工具授予 orchestrator / quant-trader (跑数据/回测), 但不含浏览器
+# 用显式工具名授权 (而非整个 mcp__agentcore 前缀), 避免把浏览器一并放开。
+_AC = "mcp__agentcore__"
+AGENTCORE_CODE_TOOLS = [_AC + n for n in (
+    "start_code_interpreter_session", "stop_code_interpreter_session",
+    "get_code_interpreter_session", "list_code_interpreter_sessions",
+    "execute_code", "execute_command", "upload_file", "download_file",
+    "search_agentcore_docs", "fetch_agentcore_doc",
+)]
+# 浏览器工具 (仅 web-browser 子Agent)
+AGENTCORE_BROWSER_TOOLS = [_AC + n for n in (
+    "start_browser_session", "get_browser_session", "stop_browser_session",
+    "list_browser_sessions", "browser_navigate", "browser_navigate_back",
+    "browser_navigate_forward", "browser_click", "browser_type", "browser_fill_form",
+    "browser_select_option", "browser_hover", "browser_press_key", "browser_upload_file",
+    "browser_handle_dialog", "browser_mouse_wheel", "browser_snapshot",
+    "browser_take_screenshot", "browser_wait_for", "browser_console_messages",
+    "browser_network_requests", "browser_evaluate", "browser_tabs", "browser_close",
+    "browser_resize",
+)]

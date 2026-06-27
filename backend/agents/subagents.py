@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from claude_agent_sdk import AgentDefinition
 
-from agents.sdk_tools import TOOL_GROUPS
+from agents.sdk_tools import TOOL_GROUPS, AGENTCORE_CODE_TOOLS, AGENTCORE_BROWSER_TOOLS
 
 # ── 子Agent 工具集 ──
 _ANALYST_TOOLS = (
@@ -37,15 +37,16 @@ _QUANT_TOOLS = TOOL_GROUPS["market-data"] + TOOL_GROUPS["quant"] + TOOL_GROUPS["
 
 # 通用编程/执行能力 — 让子Agent能真正写代码、跑程序、读写文件 (像 Claude Code)。
 # quant-trader 尤其需要: 创建量化程序、跑回测、调试迭代。
-_DEV_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "mcp__agentcore", "TodoWrite"]
+# 只给代码解释器工具, 不给浏览器 (浏览器仅 web-browser 子Agent持有)。
+_DEV_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "TodoWrite"] + AGENTCORE_CODE_TOOLS
 _QUANT_TOOLS = _QUANT_TOOLS + _DEV_TOOLS
 # 分析师不带 mcp__agentcore (浏览器): 网络研究只走 WebSearch/WebFetch, 避免默认狂用浏览器。
 # 真正需要浏览器渲染/登录/交互的页面, 由 orchestrator 委派专门的 web-browser 子Agent处理。
 _ANALYST_TOOLS = (_ANALYST_TOOLS + TOOL_GROUPS["persistence"]
                   + ["WebSearch", "WebFetch", "Read", "Write", "TodoWrite"])
 
-# 网页浏览专用子Agent: 只有它持有浏览器 (mcp__agentcore), 用于必须渲染JS/登录态/点击填表的页面。
-_WEB_BROWSER_TOOLS = ["mcp__agentcore", "WebFetch", "Read", "Write", "TodoWrite"]
+# 网页浏览专用子Agent: 唯一持有浏览器工具, 用于必须渲染JS/登录态/点击填表的页面。
+_WEB_BROWSER_TOOLS = AGENTCORE_BROWSER_TOOLS + ["WebFetch", "Read", "Write", "TodoWrite"]
 
 
 INVESTMENT_ANALYST_PROMPT = """你是一位资深证券投资分析师, 拥有CFA资格和10年A股研究经验。
