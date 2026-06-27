@@ -108,13 +108,25 @@ export default function MarketPage() {
     try {
       await api.post(`/api/watchlist/${defaultWlId}/add`, { stock_code: code, stock_name: name, pool_type: pool })
       toast.success(`${name} 已加入${POOL_META[pool].name}`)
-      loadPools()
+      await loadPools()
     } catch (err: any) { toast.error(err.response?.data?.detail || '添加失败') }
   }
 
   const handleRemove = async (code: string, pool: PoolKey) => {
     if (!defaultWlId) return
-    try { await api.delete(`/api/watchlist/${defaultWlId}/remove/${code}?pool_type=${pool}`); toast.success('已移除'); loadPools() } catch {}
+    try {
+      await api.delete(`/api/watchlist/${defaultWlId}/remove/${code}?pool_type=${pool}`)
+      toast.success('已移除')
+      // 乐观更新: 立即从行情表 + 池里移除该行 (不等重新拉取)
+      const raw = code.replace(/^(sh|sz)/, '')
+      setQuotes(prev => prev.filter((q: any) => (q.code || '').replace(/^(sh|sz)/, '') !== raw))
+      setPools((prev: any) => {
+        const p = prev[pool]
+        if (!p) return prev
+        return { ...prev, [pool]: { ...p, items: (p.items || []).filter((it: any) => (it.stock_code || '').replace(/^(sh|sz)/, '') !== raw) } }
+      })
+      await loadPools()   // 再与后端对齐
+    } catch (err: any) { toast.error(err.response?.data?.detail || '移除失败') }
   }
 
   const inPool = (code: string, pool: PoolKey) => poolCodes(pool).includes(code)
