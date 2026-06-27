@@ -23,19 +23,9 @@ def _normalize_code(stock_code: str) -> str:
     return f"sz{stock_code}"
 
 
-def _quote_tencent(stock_code: str) -> dict:
-    """腾讯证券行情"""
-    code = _normalize_code(stock_code)
-    url = f"https://qt.gtimg.cn/q={code}"
-    resp = httpx.get(url, timeout=10)
-    resp.encoding = "gbk"
-    text = resp.text.strip()
-    match = re.search(r'"(.+)"', text)
-    if not match:
-        return {"error": f"腾讯API无数据: {code}"}
-    fields = match.group(1).split("~")
-    if len(fields) < 45:
-        return {"error": "腾讯行情数据格式异常"}
+def _parse_tencent_fields(fields: list[str]) -> dict:
+    """解析腾讯行情字段数组为标准 dict。"""
+    code = fields[0].split("_")[-1] if fields and fields[0] else ""
     return {
         "code": code, "name": fields[1], "source": "tencent",
         "current_price": float(fields[3]) if fields[3] else 0,
@@ -54,6 +44,47 @@ def _quote_tencent(stock_code: str) -> dict:
         "timestamp": fields[30] if len(fields) > 30 else "",
         "detail_link": "https://stockapp.finance.qq.com/mstats/#mod=list&id=hs_hsj&module=hs&type=hsj",
     }
+
+
+def _quote_tencent(stock_code: str) -> dict:
+    """腾讯证券行情 (单只)"""
+    code = _normalize_code(stock_code)
+    url = f"https://qt.gtimg.cn/q={code}"
+    resp = httpx.get(url, timeout=10)
+    resp.encoding = "gbk"
+    text = resp.text.strip()
+    match = re.search(r'"(.+)"', text)
+    if not match:
+        return {"error": f"腾讯API无数据: {code}"}
+    fields = match.group(1).split("~")
+    if len(fields) < 45:
+        return {"error": "腾讯行情数据格式异常"}
+    return _parse_tencent_fields(fields)
+
+
+def _batch_quote_tencent(stock_codes: list[str]) -> list[dict]:
+    """腾讯证券批量行情 — 一次 HTTP 请求拿多只 (q=code1,code2,...)。
+    腾讯接口对每个代码返回一行 v_<code>="...";  按行解析。"""
+    codes = [_normalize_code(c) for c in stock_codes if c]
+    out: list[dict] = []
+    # 分批 (每批 ≤60 只, 防 URL 过长)
+    for i in range(0, len(codes), 60):
+        chunk = codes[i:i + 60]
+        url = f"https://qt.gtimg.cn/q={','.join(chunk)}"
+        try:
+            resp = httpx.get(url, timeout=12)
+            resp.encoding = "gbk"
+            for line in resp.text.split(";"):
+                m = re.search(r'"(.+?)"', line)
+                if not m:
+                    continue
+                fields = m.group(1).split("~")
+                if len(fields) >= 45:
+                    out.append(_parse_tencent_fields(fields))
+        except Exception as e:  # noqa: BLE001
+            for c in chunk:
+                out.append({"code": c, "error": f"腾讯批量行情失败: {str(e)[:80]}"})
+    return out
 
 
 def _quote_sina(stock_code: str) -> dict:
@@ -219,16 +250,30 @@ def get_stock_realtime_quote(stock_code: str, source: str = "tencent") -> dict:
 
 
 def get_stock_batch_quotes(stock_codes: list[str], source: str = "tencent") -> list[dict]:
-    """批量获取多只股票的实时行情
+    """批量获取多只股票的实时行情。
+
+    tencent: 用单次批量请求 (q=code1,code2,...), 数十只也只 1-2 个 HTTP, 秒级返回;
+    其它源: 并发抓取 (线程池), 避免逐只串行造成几十秒延迟。
 
     Args:
         stock_codes: 股票代码列表，如 ["600519", "000858", "300750"]
         source: 数据源 tencent(默认)/sina/yahoo
     """
-    results = []
-    for code in stock_codes:
-        quote = get_stock_realtime_quote(code, source)
-        results.append(quote)
+    codes = [c for c in (stock_codes or []) if c]
+    if not codes:
+        return []
+    if source == "tencent":
+        return _batch_quote_tencent(codes)
+    # 其它源: 并发 (最多 12 线程)
+    from concurrent.futures import ThreadPoolExecutor
+    results: list[dict] = [None] * len(codes)  # type: ignore
+    with ThreadPoolExecutor(max_workers=min(12, len(codes))) as ex:
+        futs = {ex.submit(get_stock_realtime_quote, c, source): i for i, c in enumerate(codes)}
+        for fut, idx in futs.items():
+            try:
+                results[idx] = fut.result()
+            except Exception as e:  # noqa: BLE001
+                results[idx] = {"code": codes[idx], "error": str(e)[:80]}
     return results
 
 
