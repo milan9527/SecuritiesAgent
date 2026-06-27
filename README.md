@@ -1,389 +1,199 @@
 # 证券交易助手 Agent 平台
 
-AI-powered securities trading assistant platform built on the **Claude Agent SDK** (`claude-agent-sdk`) and **AWS Bedrock AgentCore**, featuring investment analysis, stock trading, quantitative backtesting, and scheduled autonomous tasks. The orchestrator delegates to specialized **sub-agents** (`AgentDefinition`) and works tightly with **Skills** (`.claude/skills/*/SKILL.md`); all domain capabilities are exposed as in-process MCP tools.
+AI-powered securities trading assistant built on the **Claude Agent SDK** (`claude-agent-sdk`) and **AWS Bedrock AgentCore**. A general-purpose, finance-focused agent (like Claude Code, but for A-shares): it does investment research, trading-signal generation, quantitative strategy design/backtest/auto-execution, writes & runs code, and runs autonomous scheduled tasks. The orchestrator delegates to specialized **sub-agents** (`AgentDefinition`), works tightly with **Skills** (`.claude/skills/*/SKILL.md` on EFS), and exposes all domain capabilities as in-process MCP tools. Every output the agent produces is persisted into the matching business module.
+
+> This repo deploys the **`securities-trading-cc-*`** stack in `us-east-1` (parallel/isolated from any earlier `securities-trading-*` stack).
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         Frontend (React 18 + Vite)                          │
-│  Dashboard │ 投资分析 │ 行情 │ 模拟盘 │ 交易策略 │ 量化 │ AI助手 │ Skills   │
-│  扫描 │ 文档知识库 │ 定期任务 │ 设置                                         │
-└──────────────────────────────┬──────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                         Frontend (React 18 + Vite + TS)                        │
+│  总览 │ 投资分析 │ 行情(含自选股4池) │ 模拟盘 │ 量化策略 │ AI助手 │ 工作区     │
+│  文档知识库 │ 定期任务 │ Skill/MCP │ 设置                                       │
+└──────────────────────────────┬─────────────────────────────────────────────────┘
                                │ HTTPS (/api/*)
-┌──────────────────────────────▼──────────────────────────────────────────────┐
-│                    Amazon CloudFront (OAC → S3 + ALB)                       │
-│  /* → S3 (sec-trading-web-app-prod)                                         │
-│  /api/* → ALB (securities-trading-alb) → ECS Fargate                        │
-└──────────────────────────────┬──────────────────────────────────────────────┘
-                               │
-┌──────────────────────────────▼──────────────────────────────────────────────┐
-│                    ECS Fargate Backend (FastAPI)                             │
-│  Auth (Cognito + JWT) │ Market │ Portfolio │ Strategy │ Quant │ Chat        │
-│  Skills │ Scanning │ Documents │ Scheduler │ Analysis │ Settings            │
-│                                                                             │
-│  Real-time SSE Streaming (text chunks, status updates, keepalive pings)     │
-│                                                                             │
-│  AI Chat/Analysis/Strategy/Scheduler → invoke_runtime_agent_streaming()     │
-└──────┬──────────────┬───────────────────────────────────────────┬───────────┘
-       │              │                                           │
-┌──────▼──────┐ ┌─────▼────────────┐                    ┌────────▼───────────┐
-│ Aurora      │ │ ElastiCache      │                    │ AgentCore Runtime  │
-│ PostgreSQL  │ │ Redis (TLS)      │                    │ SecuritiesTrading  │
-│ Serverless  │ │ Serverless       │                    │ Agent              │
-│ v2          │ │                  │                    │                    │
-│ 13 tables   │ │ Quote cache 10s  │                    │ ┌────────────────┐ │
-│ Users       │ │ K-line cache 60s │                    │ │ Orchestrator   │ │
-│ Stocks      │ │                  │                    │ │ (SDK Sub-agents)│ │
-│ Portfolios  │ │                  │                    │ │                │ │
-│ Strategies  │ │                  │                    │ │ Sub-Agents:    │ │
-│ Orders      │ │                  │                    │ │ • Analyst      │ │
-│ Reports     │ │                  │                    │ │ • Trader       │ │
-│ Scheduler   │ │                  │                    │ │ • Quant        │ │
-│ Documents   │ │                  │                    │ │                │ │
-│ Knowledge   │ │                  │                    │ │ Tools:         │ │
-└─────────────┘ └──────────────────┘                    │ │ • Browser ✅   │ │
-                                                        │ │ • CodeInterp ✅│ │
-┌───────────────────────────────────────────┐           │ └────────────────┘ │
-│ AgentCore Services                        │           │                    │
-│                                           │           │ OTEL Tracing       │
-│ Memory (STM + LTM)                        │◄──────────│ Persistent Storage │
-│ ├─ SessionSummarizer                      │           └────────────────────┘
-│ ├─ InvestmentPreferenceLearner            │                    │
-│ └─ TradingKnowledgeEvolution (SCOPE)      │              ┌─────▼─────┐
-│                                           │              │ Bedrock   │
-│ Registry (9 Skills + external)            │              │ Claude    │
-│ ├─ market-data-skill                      │              │ Sonnet    │
-│ ├─ analysis-skill                         │              │ 4.6       │
-│ ├─ web-fetch-skill                        │              └───────────┘
-│ ├─ crawler-skill                          │
-│ ├─ trading-skill                          │         ┌─────────────────┐
-│ ├─ quant-skill                            │         │ Amazon Cognito  │
-│ ├─ notification-skill                     │         │ User Pool       │
-│ ├─ browser-crawler-skill                  │         │ (Authentication)│
-│ └─ code-interpreter-skill                 │         └─────────────────┘
-│                                           │
-│ Browser (Public + Web Bot Auth)           │         ┌─────────────────┐
-│ Code Interpreter (Public)                 │         │ Amazon SNS      │
-│ Observability (OTEL → CloudWatch)         │         │ (Notifications) │
-└───────────────────────────────────────────┘         └─────────────────┘
+┌──────────────────────────────▼─────────────────────────────────────────────────┐
+│           Amazon CloudFront (OAC)  d1tzdolf7o9pmw.cloudfront.net                 │
+│  /*    → S3 (private, OAC)            /api/* → ALB (Compress=off for SSE)        │
+└──────────────────────────────┬─────────────────────────────────────────────────┘
+┌──────────────────────────────▼─────────────────────────────────────────────────┐
+│                      ECS Fargate Backend (FastAPI, ARM64, ≥2 tasks)             │
+│  Auth(Cognito+JWT) │ Market │ Portfolio │ Strategy/Quant │ Chat(SSE) │ Analysis │
+│  Watchlist(4 pools) │ Documents+KB │ Scheduler │ Workspace │ Feishu │ Settings  │
+│  + token-guarded internal endpoints (agent → module write-back)                 │
+└───┬───────────────┬──────────────────────┬──────────────────────┬───────────────┘
+    │               │                      │                      │
+┌───▼────────┐ ┌────▼──────────┐  ┌────────▼─────────┐   ┌────────▼────────────────┐
+│ Aurora     │ │ ElastiCache   │  │ EFS (/mnt/skills)│   │ AgentCore Runtime        │
+│ PostgreSQL │ │ Redis (TLS)   │  │ • skills (SKILL) │   │ SecuritiesTradingCcAgent │
+│ Serverless │ │ quote 10s     │  │ • sessions       │   │ ┌──────────────────────┐ │
+│ v2 (17 tbl)│ │ kline 60s     │  │ • workspace/<uid>│   │ │ Orchestrator         │ │
+└────────────┘ │ scheduler lock│  └──────────────────┘   │ │  ├ investment-analyst│ │
+               └───────────────┘                         │ │  ├ stock-trader      │ │
+┌─────────────────────────────────────────────┐         │ │  ├ quant-trader      │ │
+│ AgentCore services                          │         │ │  └ web-browser       │ │
+│ • Memory (STM events + LTM: prefs/summary/  │◄────────│ │ skills="all" (EFS)   │ │
+│   episodic) — self-iteration                │         │ └──────────────────────┘ │
+│ • Web Search (MCP Gateway, SigV4)           │         │ OTEL → Observability     │
+│ • Code Interpreter (custom, public egress)  │         └──────────┬───────────────┘
+│ • Browser (custom, public egress)           │                    │
+│ • Observability (OTEL → X-Ray + CloudWatch) │             ┌──────▼──────┐
+└─────────────────────────────────────────────┘             │ Bedrock     │
+                                                            │ Claude      │
+EventBridge Scheduler ─► Lambda (thin) ─► /api/.../run-task │ Sonnet 4.6  │
+  (per-task, tz-aware Asia/Shanghai)                        └─────────────┘
 ```
+
+## Agents & Tools
+
+**Orchestrator** (`agents/orchestrator_agent.py`) runs via `claude-agent-sdk` `query()`, is the AgentCore Runtime entrypoint (`BedrockAgentCoreApp`), and delegates to four sub-agents (`agents/subagents.py`):
+
+| Sub-agent | Role | Browser | Code Interp. |
+|-----------|------|:---:|:---:|
+| `investment-analyst` | research / reports (WebSearch + WebFetch only) | ❌ | ❌ |
+| `stock-trader` | strategies / signals / simulated orders | ❌ | ❌ |
+| `quant-trader` | quant code / backtest (writes & runs code) | ❌ | ✅ |
+| `web-browser` | **only** holder of the browser; for must-render/login/interaction pages | ✅ | ❌ |
+
+- **Web search** = AgentCore Web Search (managed MCP Gateway connector, SigV4); page reading = WebFetch; browser is a quarantined fallback.
+- **Persistence MCP tools** let the agent write results into modules: `save_trading_strategy`, `save_quant_strategy`, `add_to_watchlist`, `save_analysis_report`, `save_document`, `create_scheduled_task`, `place_simulated_order`, `list_my_strategies` — via token-guarded internal endpoints (the Runtime has no DB creds).
+- **Outputs persist** to a per-user EFS workspace `/mnt/skills/workspace/<user_id>/` (code/documents/data/skills), browsable in the 工作区 page.
 
 ## Key Features
 
-### 1. Investment Analysis (投资分析)
-- Quick technical analysis: MA, MACD, RSI, Bollinger Bands, KDJ
-- AI-powered deep research via AgentCore Runtime with **real-time streaming output**
-- Professional financial crawlers (东方财富, 新浪, 财联社)
-- Stock research reports from broker analysts
-- Web search for latest news and announcements
-- 6 analysis templates: stock, sector, market overview, comparison, risk, deep research
-- Reports auto-saved to document knowledge base
-
-### 2. Market Data (行情)
-- Multi-source realtime quotes: Tencent (default), Sina, Yahoo Finance
-- Candlestick K-line charts with MA/Bollinger/Volume indicators
-- Buy/Sell 5-level order book
-- Market indices: 上证指数, 深圳成指, 创业板指
-- Watchlist management with auto-refresh (10s interval)
-- Stock search with pinyin autocomplete
-
-### 3. Simulated Trading (模拟盘)
-- Paper trading with realistic commission/tax calculation
-- Stock search autocomplete with realtime price display
-- 5-level order book for price selection
-- Position tracking and P&L calculation
-- Order history
-
-### 4. Trading Strategy (交易策略)
-- Create/edit strategies with technical indicators
-- Buy/sell conditions and risk rules
-- AI strategy assistant with **real-time streaming**
-- Apply strategy to specific stocks for buy/sell analysis
-- Strategy templates: MA crossover, RSI, Bollinger, MACD
-
-### 5. Quantitative Trading (量化交易)
-- 6 preset templates (幻方量化 style): Dual MA, MACD, Bollinger, RSI, Multi-factor, Turtle
-- Custom strategy code editor
-- Historical backtesting engine
-- Performance metrics: Sharpe, Sortino, Calmar, max drawdown, win rate
-- Equity curve visualization
-- AI quant assistant with **real-time streaming**
-
-### 6. AI Assistant (AI助手) — Agent Playground
-- Chat with AgentCore Runtime agent (Claude Sonnet 4.6)
-- **Real-time streaming output** — see agent text as it generates, no tool call noise
-- **Skill Control Panel**: toggle 9+ skills on/off
-- **Smart Select**: AgentCore Registry semantic search auto-selects relevant skills
-- **Agent presets**: Orchestrator, Analyst, Trader, Quant with skill presets
-- Conversation stored in AgentCore Memory (STM + LTM)
-- SCOPE self-evolution: agent learns from interactions
-- Browser and Code Interpreter tools available
-- Session history with multi-session management
-
-### 7. Scheduled Tasks (定期任务)
-- **Natural language task creation** — AI auto-parses cron expressions
-- 6 preset tasks for new users:
-  - 每日A股市场分析 (工作日15:00)
-  - 每周买卖信号检查 (周一9:00)
-  - 每日收盘绩效报告 (工作日16:00)
-  - 每周市场周报 (周五15:00)
-  - **每日走势预测** (工作日14:30) — 预测自选股和大盘明日走势
-  - **每周预测验证与自我改进** (周一9:00) — 验证准确率, 自我改进
-- **Edit each task**: name, description, prompt, cron expression, notification email
-- **Enable/disable** individual tasks
-- **Run immediately** with real-time streaming output
-- **SNS email notifications** — auto-subscribe, results sent after execution
-- EventBridge cron scheduling
-
-### 8. Authentication (用户认证)
-- **Amazon Cognito** integration — secure user authentication
-- **Local DB fallback** — works without Cognito for development
-- **Self-registration** — new users can register (when Cognito enabled)
-- **Per-user data isolation** — each user has independent sessions, watchlists, portfolios, strategies, tasks
-- **Shared Registry Skills** — all users access the same AgentCore Registry
-- **Auto-seed on first login** — new users get default watchlist (5 stocks), portfolio (¥1M), and 6 scheduled tasks
-- JWT token-based API authentication
-
-### 9. Notifications (通知)
-- **Amazon SNS** for email notifications (not SES)
-- Auto-subscribe email to SNS topic on first use
-- Scheduled task results sent via SNS after execution
-- Notification email configurable per-user in Settings
-- Updating notification email auto-updates all scheduled tasks
-
-### 10. Skills Management
-- 9 built-in skills + external imports
-- Import from URL (GitHub) or AI-generated
-- Auto-publish to AgentCore Registry with approval workflow
-- LLM-powered security scanning
-
-### 11. Document Knowledge Base (文档知识库)
-- Store analysis reports, strategy documents
-- pgvector embeddings for semantic search
-- Auto-save agent analysis results
-
-### 12. Settings
-- LLM model switching (9 models: Claude 4.x, Nova, Haiku)
-- Max tokens configuration (1K-64K slider)
-- Notification email (SNS) configuration with test button
-- Data source management
+1. **投资分析** — quick technical analysis (MA/MACD/RSI/Boll/KDJ) + AI deep research (real-time SSE); reports auto-saved to 分析报告 / 知识库.
+2. **行情 (Market)** — multi-source realtime quotes (Tencent/Sina/Yahoo), K-line, order book, indices, pinyin search. **自选股已合并到行情页**, 4 pools: 分析股票池 / 实际交易 / 模拟盘 / 量化交易 (`/api/watchlist/pools`).
+3. **模拟盘** — paper trading; positions show **live current price & P&L** (refreshed from live quotes on GET, 30s auto-refresh).
+4. **量化策略 (merged 交易策略+量化交易)** — 6 preset templates; NL→strategy generation; backtest; **apply to scope** (watchlist/sector/whole-market → per-stock signals); **auto-execute** (per-strategy toggle → EventBridge scheduled task, trading-hours half-hourly).
+5. **AI助手** — full Claude-Code-like agent (Sonnet 4.6) with real-time SSE; multi-session history; outputs land in the right modules; long-term memory via AgentCore Memory.
+6. **工作区** — browse/preview/download the agent's persisted artifacts (per-user, EFS), grouped by category.
+7. **文档知识库** — documents + pgvector semantic search; auto-categorized on add-to-KB.
+8. **定期任务** — NL task creation (LLM→cron); **EventBridge Scheduler + Lambda** (per-user, tz-aware **Beijing time**); enable/disable; per-task **notification email toggle**; run-now (SSE, deduped); results emailed via SES.
+9. **Skill/MCP** — EFS-based skills (builtin seeded + import from URL/GitHub); enable/disable; external-skill priority.
+10. **设置** — global LLM model dropdown + max-tokens (Redis-backed, applied to Runtime); Feishu IM **enable/disable** + config (encrypt_key supported); notification email.
+11. **认证** — Cognito + JWT, local fallback; per-user data isolation; auto-seed on first login.
+12. **Observability** — all agents emit OTEL traces/spans to AgentCore Observability (X-Ray + CloudWatch GenAI) via ADOT.
+13. **飞书 (Feishu) IM** — chat with the agent from Feishu; webhook supports encrypted events; on/off toggle.
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | React 18, TypeScript, Tailwind CSS, Recharts, Vite |
-| Backend | Python 3.12, FastAPI, SQLAlchemy 2, Pydantic 2 |
-| Agent SDK | Claude Agent SDK (`claude-agent-sdk`), Sub-agents + Skills + in-process MCP tools |
-| Runtime | AWS Bedrock AgentCore Runtime (ARM64, VPC) |
-| LLM | Bedrock Claude Sonnet 4.6 (default), 9 models available |
-| Memory | AgentCore Memory (STM + LTM, SCOPE self-evolution) |
-| Registry | AgentCore Registry (9+ skill records, semantic search) |
-| Browser | AgentCore Browser (Public, Web Bot Auth) |
-| Code Exec | AgentCore Code Interpreter (Public) |
-| Observability | AgentCore Observability (OTEL → CloudWatch) |
-| Database | Amazon Aurora PostgreSQL Serverless v2 (13 tables) |
-| Cache | Amazon ElastiCache Redis Serverless (TLS) |
+| Frontend | React 18, TypeScript, Tailwind, Recharts, react-markdown, Vite |
+| Backend | Python 3.12, FastAPI, SQLAlchemy 2 (async), Pydantic 2 |
+| Agent SDK | Claude Agent SDK (`claude-agent-sdk`); sub-agents + EFS skills + in-process MCP tools |
+| Runtime | AWS Bedrock AgentCore Runtime (ARM64, VPC, EFS mount) |
+| LLM | Bedrock Claude Sonnet 4.6 (global LLM settings via Redis) |
+| Memory | AgentCore Memory (STM events + LTM: preferences/summary/episodic) |
+| Web Search | AgentCore Web Search (MCP Gateway connector, SigV4) — $7/1k queries |
+| Browser / Code | AgentCore custom Browser + Code Interpreter (public egress) |
+| Observability | AgentCore Observability (ADOT / OTEL → X-Ray + CloudWatch) |
+| Database | Aurora PostgreSQL Serverless v2 (17 tables, pgvector) |
+| Cache/Lock | ElastiCache Redis Serverless (TLS) |
+| Storage | EFS (skills + sessions + per-user workspace) |
 | Hosting | CloudFront + S3 (frontend), ECS Fargate + ALB (backend) |
-| Auth | Amazon Cognito + JWT (per-user isolation) |
-| Notifications | Amazon SNS (email subscriptions) |
-| Scheduling | EventBridge cron rules |
-| Streaming | SSE (Server-Sent Events) with real-time text chunks |
-
-## Real-time Streaming
-
-All agent-powered features use SSE streaming for real-time output:
-
-```
-Frontend                    Backend (FastAPI)              AgentCore Runtime
-   │                            │                              │
-   │── POST /api/chat/ ────────►│                              │
-   │                            │── invoke_streaming() ───────►│
-   │◄── SSE: {type:"ping"} ────│                              │
-   │◄── SSE: {type:"status"} ──│◄── status updates ──────────│
-   │◄── SSE: {type:"text"} ────│◄── text chunks ─────────────│
-   │◄── SSE: {type:"text"} ────│◄── text chunks ─────────────│
-   │◄── SSE: {type:"result"} ──│◄── final result ────────────│
-   │                            │                              │
-   │  (User sees text appear    │  (No tool call details       │
-   │   in real-time)            │   exposed to user)           │
-```
-
-Supported pages: AI助手, 投资分析, 交易策略, 量化交易, 定期任务
+| Auth | Amazon Cognito + JWT |
+| Scheduling | EventBridge Scheduler + Lambda (tz-aware, per task) |
+| Notifications | Amazon SES (HTML email) |
+| Streaming | SSE (real-time token streaming, keepalive pings) |
 
 ## Local Development
 
-### Prerequisites
-- Python 3.12+, Node.js 18+, Docker (for PostgreSQL/Redis or use docker-compose)
-- AWS credentials configured (`aws configure`)
-- Bedrock model access enabled (Claude Sonnet 4.6)
-
-### Setup
 ```bash
-# 1. Start databases (option A: docker-compose)
-docker-compose up -d
-
-# 1. Start databases (option B: local install)
-sudo systemctl start postgresql redis6
-sudo -u postgres psql -c "CREATE DATABASE securities_trading OWNER postgres;"
+# 1. Databases
+docker-compose up -d                       # PostgreSQL + Redis
 
 # 2. Backend
 cd backend
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -e .
-cp env/local.env .env    # Local dev (localhost DB/Redis)
-# or: cp env/aws.env .env  # Use AWS Aurora/Redis/Cognito
-python -m db.seed        # Initialize seed data
-python main.py           # http://localhost:8000
+cp env/local.env .env                      # or env/aws.env for AWS resources
+python -m db.seed
+python main.py                             # http://localhost:8000
+# Local default: SCHEDULER_MODE=apscheduler (in-process); AWS uses eventbridge
 
 # 3. Frontend
-cd frontend
-npm install
-npm run dev              # http://localhost:3000 (proxies /api to :8000)
+cd frontend && npm install && npm run dev  # http://localhost:3000 (proxies /api → :8000)
 ```
 
-### Default Accounts
+Prereqs: Python 3.12+, Node 18+, Docker, AWS credentials, Bedrock model access (Claude Sonnet 4.6).
 
-| Username | Password | Source | Notes |
-|----------|----------|--------|-------|
-| demo | demo123456 | Local DB | Works when Cognito disabled |
-| admin | Admin@2026! | Cognito | Works when Cognito enabled |
-| pingaws | Pingaws@2026! | Cognito | Works when Cognito enabled |
+### Accounts
+`admin` / `milan` (password `Amazon@2019`); local `demo`/`demo123456` when Cognito disabled. Self-registration available when Cognito is enabled.
 
-New users can self-register via the login page when Cognito is enabled.
+## AWS Deployment (us-east-1)
 
-## AWS Deployment
+| Resource | ID |
+|----------|----|
+| CloudFront | `d1tzdolf7o9pmw.cloudfront.net` (dist `E3HH2Q94JAJUMM`) |
+| ECS | cluster `securities-trading-cc`, service `backend` (ARM64, ≥2 tasks) |
+| ALB | `securities-trading-cc-alb` |
+| ECR | `securities-trading-cc-backend` |
+| Aurora / Redis | `securities-trading-cc-*` (Serverless, VPC-only) |
+| EFS | shared access point → `/mnt/skills` (Runtime + ECS) |
+| AgentCore Runtime | `SecuritiesTradingCcAgent-hupUVh2j1u` (VPC + EFS) |
+| AgentCore Memory | `SecuritiesTradingCcMemory-5JCaSI84kf` |
+| Web Search Gateway | `securities-trading-cc-websearch-cmwj8f1pne` (MCP, AWS_IAM) |
+| Scheduler | EventBridge Scheduler group `securities-trading-cc` + Lambda `securities-trading-cc-scheduler-trigger` |
+| Cognito / SES | user pool + verified senders |
 
-### Infrastructure (deployed in us-east-1)
+The same Docker image runs two roles via `RUN_MODE` (`entrypoint.sh`): default = FastAPI on ECS (port 8000); `RUN_MODE=agent` = AgentCore Runtime agent server (port 8080, launched via `opentelemetry-instrument`).
 
-| Resource | Details |
-|----------|---------|
-| Aurora PostgreSQL | `securities-trading-aurora` (Serverless v2, VPC-only SG) |
-| ElastiCache Redis | `securities-trading-redis` (Serverless, TLS, VPC-only SG) |
-| ECS Fargate | `securities-trading` cluster, `backend` service (2 tasks, ARM64) |
-| ALB | `securities-trading-alb` → ECS target group (port 8000) |
-| ECR | `securities-trading-backend` (Docker image) |
-| CloudFront | `dt0u20qd1sod9.cloudfront.net` (OAC→S3 + /api/*→ALB) |
-| S3 | `sec-trading-web-app-prod` (private, OAC only) |
-| Cognito | `SecuritiesTradingUserPool` (`us-east-1_DpOE0uo8p`) |
-| SNS | `securities-trading-notifications` (email subscriptions) |
-| AgentCore Runtime | `SecuritiesTradingAgent-Ma2PoA8Zw8` (Public network) |
-| AgentCore Memory | `SecuritiesTradingMemory-PhU3ojCYpp` (STM+LTM, 3 strategies) |
-| AgentCore Registry | `Eea8hqxihmpeJlYv` (9 skills, all APPROVED) |
-| AgentCore Browser | `SecuritiesTradingBrowser-F6aHtUeGkj` (Public + Web Bot Auth) |
-| AgentCore Code Interpreter | `SecuritiesTradingCodeInterpreter-wGp9YodWEL` |
-
-### Deploy Commands
 ```bash
 # Frontend → S3 + CloudFront
 cd frontend && npm run build
-aws s3 sync dist/ s3://sec-trading-web-app-prod/ --delete --region us-east-1
-aws cloudfront create-invalidation --distribution-id EFHJYSE515D2O --paths "/*"
+aws s3 sync dist/ s3://securities-trading-cc-web-632930644527-us-east-1 --delete
+aws cloudfront create-invalidation --distribution-id E3HH2Q94JAJUMM --paths "/*"
 
-# Backend → ECR + ECS Fargate
+# Backend → ECR + ECS (and bump Runtime, which re-pulls the same image)
 cd backend
-docker build -t securities-trading-backend .
+REPO=632930644527.dkr.ecr.us-east-1.amazonaws.com/securities-trading-cc-backend
 aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 632930644527.dkr.ecr.us-east-1.amazonaws.com
-docker tag securities-trading-backend:latest 632930644527.dkr.ecr.us-east-1.amazonaws.com/securities-trading-backend:latest
-docker push 632930644527.dkr.ecr.us-east-1.amazonaws.com/securities-trading-backend:latest
-aws ecs update-service --cluster securities-trading --service backend --force-new-deployment
+docker build --platform linux/arm64 -t $REPO:latest . && docker push $REPO:latest
+aws ecs update-service --cluster securities-trading-cc --service backend --force-new-deployment
 
-# AgentCore Runtime
-cd backend && source .venv/bin/activate
-agentcore launch
-
-# Registry Skills Update
-# Login via API, then POST /api/skills/update-registry
-
-# Full infrastructure setup
-python infra/deploy_aws.py plan    # Preview
-python infra/deploy_aws.py deploy  # Deploy all
-python infra/deploy_aws.py status  # Check status
-```
-
-### Security Groups
-```
-ALB SG (sg-alb)         : TCP 80/443 ← 0.0.0.0/0
-ECS SG (sg-ecs)         : TCP 8000 ← ALB SG
-Aurora SG (sg-aurora)   : TCP 5432 ← VPC CIDR + ECS SG + Runtime SG
-Redis SG (sg-redis)     : TCP 6379 ← VPC CIDR + ECS SG + Runtime SG
-Runtime SG (sg-runtime) : outbound all
+# CDK (infra)
+cd infra/cdk && cdk deploy --all
 ```
 
 ## Project Structure
 ```
-├── backend/
-│   ├── .claude/skills/                # Claude Agent SDK Skills (progressive disclosure)
-│   │   ├── investment-analysis/SKILL.md
-│   │   ├── stock-trading/SKILL.md
-│   │   ├── quant-trading/SKILL.md
-│   │   └── market-data/SKILL.md
-│   ├── agents/
-│   │   ├── orchestrator_agent.py      # Main agent: claude-agent-sdk query() + AgentCore Runtime entry
-│   │   ├── subagents.py               # AgentDefinition sub-agents (analyst / trader / quant)
-│   │   ├── sdk_tools.py               # SDK @tool wrappers + in-process MCP server (securities)
-│   │   ├── model_loader.py            # Bedrock model catalog + env setup (CLAUDE_CODE_USE_BEDROCK)
-│   │   ├── runtime_client.py          # AgentCore Runtime client (local SDK fallback)
-│   │   └── skills/                    # Plain business-logic functions (also called by routes)
-│   │       ├── market_data_skill.py   # Multi-source quotes, K-line, order book
-│   │       ├── analysis_skill.py      # Technical indicators, reports
-│   │       ├── web_fetch_skill.py     # Web search (DDG + Bing)
-│   │       ├── crawler_skill.py       # Financial crawlers (东方财富/新浪/财联社)
-│   │       ├── trading_skill.py       # Simulated trading, signals
-│   │       ├── quant_skill.py         # Backtesting engine, 6 templates
-│   │       └── notification_skill.py  # SNS email notifications
-│   ├── api/
-│   │   ├── auth.py                    # Cognito + JWT + auto-seed new users
-│   │   ├── schemas.py                 # Pydantic request/response models
-│   │   └── routes/
-│   │       ├── auth_routes.py         # Login, register, profile, config
-│   │       ├── chat_routes.py         # AI chat (SSE streaming)
-│   │       ├── market_routes.py       # Quotes, K-line, indices
-│   │       ├── portfolio_routes.py    # Simulated trading
-│   │       ├── strategy_routes.py     # Trading + quant strategies (SSE streaming)
-│   │       ├── analysis_routes.py     # Investment analysis (SSE streaming)
-│   │       ├── scheduler_routes.py    # Scheduled tasks (SSE streaming, SNS notify)
-│   │       ├── watchlist_routes.py    # Watchlist CRUD
-│   │       ├── skill_routes.py        # Skills + Registry management
-│   │       ├── document_routes.py     # Document knowledge base
-│   │       ├── scanning_routes.py     # LLM security scanning
-│   │       └── settings_routes.py     # LLM switch, max tokens, SNS test
-│   ├── db/
-│   │   ├── database.py                # SQLAlchemy async engine + migrations
-│   │   ├── models.py                  # 13 tables (User, Stock, Portfolio, etc.)
-│   │   ├── redis_client.py            # Redis cache client
-│   │   └── seed.py                    # Seed data (stocks, strategies, scheduler tasks)
-│   ├── config/settings.py             # Pydantic settings (env-based)
-│   ├── main.py                        # FastAPI app entry
-│   ├── Dockerfile                     # ECS Fargate container
-│   ├── .bedrock_agentcore.yaml        # AgentCore deployment config
-│   └── env/ (local.env, aws.env)
-├── frontend/src/
-│   ├── services/
-│   │   ├── api.ts                     # Axios client with auth interceptor
-│   │   └── streaming.ts              # SSE streaming helper
-│   ├── store/authStore.ts             # Zustand auth state (Cognito-aware)
-│   └── pages/
-│       ├── LoginPage.tsx              # Login + Register (Cognito toggle)
-│       ├── DashboardPage.tsx          # Indices + watchlist + portfolio
-│       ├── AnalysisPage.tsx           # Quick + AI deep analysis (streaming)
-│       ├── MarketPage.tsx             # Quotes + K-line + watchlist
-│       ├── PortfolioPage.tsx          # Trading with order book
-│       ├── StrategyPage.tsx           # Trading strategies (streaming)
-│       ├── QuantPage.tsx              # Quant backtesting (streaming)
-│       ├── ChatPage.tsx               # Agent Playground + Skill Control (streaming)
-│       ├── SchedulerPage.tsx          # Scheduled tasks (edit, toggle, streaming)
-│       ├── SkillsPage.tsx             # Skills management
-│       ├── DocumentsPage.tsx          # Document knowledge base
-│       ├── ScanningPage.tsx           # LLM security scanning
-│       └── SettingsPage.tsx           # LLM + SNS notification config
-├── infra/deploy_aws.py                # AWS deployment script
-├── docker-compose.yml                 # Local dev (PostgreSQL + Redis)
-└── README.md
+backend/
+├── agents/
+│   ├── orchestrator_agent.py     # query() + BedrockAgentCoreApp entry; per-user workspace; OTEL
+│   ├── subagents.py              # 4 sub-agents (analyst/trader/quant/web-browser)
+│   ├── sdk_tools.py              # in-process MCP tools (securities) + persistence + web_search routing
+│   ├── otel_setup.py             # OTEL tracing bootstrap (ADOT-aware)
+│   ├── memory_store.py           # AgentCore Memory record_turn / recall_context
+│   ├── model_loader.py           # Bedrock model catalog + global LLM overrides
+│   ├── runtime_client.py         # Runtime invoke (local SDK fallback)
+│   ├── builtin_skills.py         # builtin SKILL.md constants (seeded to EFS)
+│   ├── skill_store.py / skill_importer.py
+│   └── skills/                   # pure business fns (also called by routes)
+│       ├── market_data_skill.py  analysis_skill.py  web_fetch_skill.py
+│       ├── crawler_skill.py  trading_skill.py  quant_skill.py
+│       ├── notification_skill.py
+│       └── agentcore_websearch_skill.py   # AgentCore Web Search via SigV4 MCP
+├── api/
+│   ├── auth.py  internal_auth.py # JWT auth + token-guarded internal-endpoint auth
+│   └── routes/                   # auth, chat, market, portfolio, strategy, analysis,
+│                                 # scheduler, watchlist, skill, document, workspace, feishu, settings
+├── services/
+│   ├── task_scheduler.py         # APScheduler fallback + _execute_task (dedup lock)
+│   └── eventbridge_scheduler.py  # EventBridge Scheduler per-task sync
+├── db/ (database.py, models.py [17 tables], redis_client.py, seed.py)
+├── config/ (settings.py, timeutil.py [Beijing time])
+├── Dockerfile  entrypoint.sh  pyproject.toml
+frontend/src/pages/                # Dashboard, Analysis, Market, Portfolio, Quant, Chat,
+                                   # Workspace, Documents, Scheduler, Skills, Settings, Login
+infra/
+├── cdk/                          # CDK stacks (network/data/auth/backend/frontend)
+├── lambda/scheduler_trigger.py   # EventBridge → backend trigger
+└── enable_runtime_observability.py
 ```
 
 ## Live URL
-- **Frontend**: https://dt0u20qd1sod9.cloudfront.net
-- **API Health**: https://dt0u20qd1sod9.cloudfront.net/api/health
-- **CloudWatch**: [GenAI Observability Dashboard](https://console.aws.amazon.com/cloudwatch/home?region=us-east-1#gen-ai-observability/agent-core)
+- **Frontend**: https://d1tzdolf7o9pmw.cloudfront.net
+- **API Health**: https://d1tzdolf7o9pmw.cloudfront.net/api/health
+- **Observability**: CloudWatch → GenAI Observability (X-Ray traces, service `securities-trading-agent`)
