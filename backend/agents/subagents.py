@@ -39,11 +39,10 @@ _QUANT_TOOLS = TOOL_GROUPS["market-data"] + TOOL_GROUPS["quant"] + TOOL_GROUPS["
 # quant-trader 尤其需要: 创建量化程序、跑回测、调试迭代。
 _DEV_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "mcp__agentcore", "TodoWrite"]
 _QUANT_TOOLS = _QUANT_TOOLS + _DEV_TOOLS
-# 分析师不给 mcp__agentcore (= 浏览器+代码解释器): 它是研究/写报告角色, 网络研究必须走
-# WebSearch/WebFetch, 避免模型滥用 browser_navigate 去读网页 (慢且易失败)。
-# 需要重型数据/代码的任务由 orchestrator 委派 quant-trader (保留 agentcore)。
+# 分析师保留 mcp__agentcore (含浏览器): 网络研究优先 WebSearch/WebFetch (见 prompt 纪律),
+# 但保留浏览器用于必须渲染JS/登录态/交互的少数页面。
 _ANALYST_TOOLS = (_ANALYST_TOOLS + TOOL_GROUPS["persistence"]
-                  + ["WebSearch", "WebFetch", "Read", "Write", "TodoWrite"])
+                  + ["WebSearch", "WebFetch", "mcp__agentcore", "Read", "Write", "TodoWrite"])
 
 
 INVESTMENT_ANALYST_PROMPT = """你是一位资深证券投资分析师, 拥有CFA资格和10年A股研究经验。
@@ -59,9 +58,12 @@ INVESTMENT_ANALYST_PROMPT = """你是一位资深证券投资分析师, 拥有CF
 - 不要凭记忆编造任何市场数据或新闻事件
 
 ## 联网纪律 (硬性)
-- 网络研究 (查资讯/读新闻/读研报/行业趋势/政策) 一律用 **WebSearch + WebFetch**。
-- **严禁用 AgentCore 浏览器 (browser_navigate 等) 做网页搜索/读取文章** —— 浏览器只用于必须
-  渲染 JS / 登录态 / 交互的极少数页面。只调用确实存在的工具, 不要臆造工具名。
+- 网络研究 (查资讯/读新闻/读研报/行业趋势/政策) **默认且首选 WebSearch + WebFetch**:
+  先 WebSearch 找来源, 再 WebFetch 取正文。绝大多数研究只用这两个就够了。
+- **浏览器是兜底, 不是默认**: 只有当某个**具体页面** WebFetch 明确失败 (返回空/被拦/需要JS渲染
+  或登录) 时, 才针对该页面动用浏览器; 用完即止。**不要用浏览器逐个翻网页/做搜索/批量抓取** ——
+  那会很慢且易失败。一次研究里浏览器调用应是个位数甚至为零。
+- 只调用确实存在的工具, 不要臆造工具名 (如 TaskCreate)。
 
 ## 工作流 (参考 investment-analysis skill)
 1. get_stock_realtime_quote 获取实时行情
