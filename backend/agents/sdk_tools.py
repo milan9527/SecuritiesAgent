@@ -36,6 +36,7 @@ from agents.skills.analysis_skill import (
     analyze_technical_indicators as _analyze_technical_indicators,
     generate_investment_report as _generate_investment_report,
 )
+from agents.skills.agentcore_websearch_skill import agentcore_web_search as _agentcore_web_search
 from agents.skills.web_fetch_skill import (
     web_search as _web_search,
     fetch_web_page as _fetch_web_page,
@@ -132,8 +133,15 @@ async def generate_investment_report(args: dict[str, Any]) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════
 # Web 搜索 (web-fetch)
 # ═══════════════════════════════════════════════════════
-@tool("web_search", "搜索互联网获取最新信息", {"query": str, "max_results": int})
+@tool("web_search", "搜索互联网获取最新信息 (AgentCore Web Search, 返回标题/链接/摘要/时间)",
+      {"query": str, "max_results": int})
 async def web_search(args: dict[str, Any]) -> dict[str, Any]:
+    # 优先用 AgentCore Web Search (官方联网搜索); 未配置网关时回退到内置搜索。
+    import os as _os
+    if _os.environ.get("AGENTCORE_WEBSEARCH_GATEWAY_URL", "").strip():
+        res = await _run(_agentcore_web_search, query=args["query"], max_results=args.get("max_results", 8))
+        # _run 返回 {"content":[{"text": ...}]}; 若底层返回了 error 文本也照常给 agent (可读)
+        return res
     return await _run(_web_search, query=args["query"], max_results=args.get("max_results", 8))
 
 

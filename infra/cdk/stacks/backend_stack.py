@@ -33,6 +33,7 @@ class BackendStack(Stack):
                  agentcore_browser_id: str = "",
                  agentcore_ci_id: str = "",
                  agentcore_memory_id: str = "",
+                 agentcore_websearch_gateway_url: str = "",
                  scheduler_mode: str = "apscheduler",
                  scheduler_invoke_token: str = "",
                  scheduler_role_arn: str = "",
@@ -176,6 +177,7 @@ class BackendStack(Stack):
                 "AGENTCORE_BROWSER_ID": agentcore_browser_id,
                 "AGENTCORE_CODE_INTERPRETER_ID": agentcore_ci_id,
                 "AGENTCORE_MEMORY_ID": agentcore_memory_id,  # 长期记忆 (偏好/摘要/情节)
+                "AGENTCORE_WEBSEARCH_GATEWAY_URL": agentcore_websearch_gateway_url,  # AgentCore Web Search 网关
                 # 定期任务调度 (EventBridge Scheduler + Lambda)
                 "SCHEDULER_MODE": scheduler_mode,
                 "SCHEDULER_INVOKE_TOKEN": scheduler_invoke_token,
