@@ -39,8 +39,11 @@ _QUANT_TOOLS = TOOL_GROUPS["market-data"] + TOOL_GROUPS["quant"] + TOOL_GROUPS["
 # quant-trader 尤其需要: 创建量化程序、跑回测、调试迭代。
 _DEV_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "mcp__agentcore", "TodoWrite"]
 _QUANT_TOOLS = _QUANT_TOOLS + _DEV_TOOLS
+# 分析师不给 mcp__agentcore (= 浏览器+代码解释器): 它是研究/写报告角色, 网络研究必须走
+# WebSearch/WebFetch, 避免模型滥用 browser_navigate 去读网页 (慢且易失败)。
+# 需要重型数据/代码的任务由 orchestrator 委派 quant-trader (保留 agentcore)。
 _ANALYST_TOOLS = (_ANALYST_TOOLS + TOOL_GROUPS["persistence"]
-                  + ["WebSearch", "WebFetch", "mcp__agentcore", "Read", "Write", "TodoWrite"])
+                  + ["WebSearch", "WebFetch", "Read", "Write", "TodoWrite"])
 
 
 INVESTMENT_ANALYST_PROMPT = """你是一位资深证券投资分析师, 拥有CFA资格和10年A股研究经验。
