@@ -6,14 +6,23 @@ import KlineChart from '../components/KlineChart'
 import api from '../services/api'
 import toast from 'react-hot-toast'
 
-type PoolKey = 'analysis' | 'trading' | 'simulated' | 'quant'
+// 标签页: 分析股票池拆成 人工/AI 两部分 (AI 由交易策略控制); 去掉量化交易
+type PoolKey = 'analysis_manual' | 'analysis_ai' | 'trading' | 'simulated'
 const POOL_META: Record<PoolKey, { name: string; icon: any }> = {
-  analysis: { name: '分析股票池', icon: Star },
+  analysis_manual: { name: '分析·人工', icon: Star },
+  analysis_ai: { name: '分析·AI', icon: BarChart3 },
   trading: { name: '实际交易股票', icon: Wallet },
   simulated: { name: '模拟盘', icon: Briefcase },
-  quant: { name: '量化交易', icon: BarChart3 },
 }
-const POOL_ORDER: PoolKey[] = ['analysis', 'trading', 'simulated', 'quant']
+const POOL_ORDER: PoolKey[] = ['analysis_manual', 'analysis_ai', 'trading', 'simulated']
+// 前端子池 → 后端真实池 + source 过滤
+const POOL_BACKEND: Record<PoolKey, { pool: string; source?: string }> = {
+  analysis_manual: { pool: 'analysis', source: 'manual' },
+  analysis_ai: { pool: 'analysis', source: 'ai' },
+  trading: { pool: 'trading' },
+  simulated: { pool: 'simulated' },
+}
+const STOCK_POOLS: PoolKey[] = ['analysis_manual', 'analysis_ai', 'trading']
 const pct = (n: number) => `${n >= 0 ? '+' : ''}${(n ?? 0).toFixed(2)}%`
 
 export default function MarketPage() {
@@ -22,7 +31,7 @@ export default function MarketPage() {
   const [selectedStock, setSelectedStock] = useState<any>(null)
   const [showKline, setShowKline] = useState(false)
   const [pools, setPools] = useState<any>({})
-  const [activePool, setActivePool] = useState<PoolKey>('analysis')
+  const [activePool, setActivePool] = useState<PoolKey>('analysis_manual')
   const [defaultWlId, setDefaultWlId] = useState('')
   const [quotes, setQuotes] = useState<any[]>([])
   const [loadingQuotes, setLoadingQuotes] = useState(false)
@@ -35,15 +44,16 @@ export default function MarketPage() {
     loadPools()
   }, [])
 
-  const poolCodes = useCallback((pk: PoolKey) => {
-    return (pools[pk]?.items || []).map((it: any) => it.stock_code).filter(Boolean)
+  // 取某前端子池的 items (从后端真实池按 source 过滤)
+  const poolItems = useCallback((pk: PoolKey) => {
+    const { pool, source } = POOL_BACKEND[pk]
+    const items = pools[pool]?.items || []
+    return source ? items.filter((it: any) => (it.source || 'manual') === source) : items
   }, [pools])
 
-  // code → source(manual/ai) 映射 (用于行情表显示人工/AI标签 + 控制是否可手动删除)
-  const srcOf = useCallback((pk: PoolKey, rawCode: string) => {
-    const it = (pools[pk]?.items || []).find((x: any) => (x.stock_code || '').replace(/^(sh|sz)/, '') === rawCode)
-    return it?.source || 'manual'
-  }, [pools])
+  const poolCodes = useCallback((pk: PoolKey) => {
+    return poolItems(pk).map((it: any) => it.stock_code).filter(Boolean)
+  }, [poolItems])
 
   const loadPools = async () => {
     try {
@@ -60,7 +70,7 @@ export default function MarketPage() {
 
   // Load quotes when active pool is a stock pool
   useEffect(() => {
-    if (activePool === 'analysis' || activePool === 'trading') {
+    if (STOCK_POOLS.includes(activePool)) {
       const codes = poolCodes(activePool)
       if (codes.length) loadQuotes(codes)
       else setQuotes([])
@@ -72,7 +82,7 @@ export default function MarketPage() {
   // Auto-refresh (only for stock pools)
   useEffect(() => {
     if (refreshTimer.current) clearInterval(refreshTimer.current)
-    if (autoRefresh && (activePool === 'analysis' || activePool === 'trading')) {
+    if (autoRefresh && STOCK_POOLS.includes(activePool)) {
       refreshTimer.current = setInterval(() => {
         const c = poolCodes(activePool)
         if (c.length) loadQuotes(c)
@@ -99,33 +109,35 @@ export default function MarketPage() {
     } catch {}
   }
 
-  // Add to the currently-active stock pool (analysis/trading); sim/quant fall back to analysis
+  // 手动加入: 人工分析池 / 实际交易 (AI池由交易策略控制, 用户不手动加); 目标后端池由 activePool 决定
   const handleAddToWatchlist = async () => {
     if (!selectedStock || !defaultWlId) { toast.error('没有自选列表'); return }
-    const pool: PoolKey = (activePool === 'analysis' || activePool === 'trading') ? activePool : 'analysis'
+    // AI/模拟盘 tab 下手动加 → 归入 分析·人工
+    const target: PoolKey = (activePool === 'analysis_manual' || activePool === 'trading') ? activePool : 'analysis_manual'
+    const backendPool = POOL_BACKEND[target].pool
     const code = selectedStock._search?.code || selectedStock.code?.replace(/^(sh|sz)/, '')
     const name = selectedStock._search?.name || selectedStock.name
     try {
-      await api.post(`/api/watchlist/${defaultWlId}/add`, { stock_code: code, stock_name: name, pool_type: pool })
-      toast.success(`${name} 已加入${POOL_META[pool].name}`)
+      await api.post(`/api/watchlist/${defaultWlId}/add`, { stock_code: code, stock_name: name, pool_type: backendPool })
+      toast.success(`${name} 已加入${POOL_META[target].name}`)
       await loadPools()
     } catch (err: any) { toast.error(err.response?.data?.detail || '添加失败') }
   }
 
-  const handleRemove = async (code: string, pool: PoolKey) => {
+  const handleRemove = async (code: string, pk: PoolKey) => {
     if (!defaultWlId) return
+    const backendPool = POOL_BACKEND[pk].pool
     try {
-      await api.delete(`/api/watchlist/${defaultWlId}/remove/${code}?pool_type=${pool}`)
+      await api.delete(`/api/watchlist/${defaultWlId}/remove/${code}?pool_type=${backendPool}`)
       toast.success('已移除')
-      // 乐观更新: 立即从行情表 + 池里移除该行 (不等重新拉取)
       const raw = code.replace(/^(sh|sz)/, '')
       setQuotes(prev => prev.filter((q: any) => (q.code || '').replace(/^(sh|sz)/, '') !== raw))
       setPools((prev: any) => {
-        const p = prev[pool]
+        const p = prev[backendPool]
         if (!p) return prev
-        return { ...prev, [pool]: { ...p, items: (p.items || []).filter((it: any) => (it.stock_code || '').replace(/^(sh|sz)/, '') !== raw) } }
+        return { ...prev, [backendPool]: { ...p, items: (p.items || []).filter((it: any) => (it.stock_code || '').replace(/^(sh|sz)/, '') !== raw) } }
       })
-      await loadPools()   // 再与后端对齐
+      await loadPools()
     } catch (err: any) { toast.error(err.response?.data?.detail || '移除失败') }
   }
 
@@ -137,8 +149,9 @@ export default function MarketPage() {
     return `https://gu.qq.com/${market}${raw}/gp`
   }
 
-  const isStockPool = activePool === 'analysis' || activePool === 'trading'
-  const starPool: PoolKey = isStockPool ? activePool : 'analysis'
+  const isStockPool = STOCK_POOLS.includes(activePool)
+  // ⭐ 手动加入的目标: 人工分析池 / 实际交易; 其它 tab 默认归 分析·人工
+  const starPool: PoolKey = (activePool === 'analysis_manual' || activePool === 'trading') ? activePool : 'analysis_manual'
 
   return (
     <div className="space-y-6">
@@ -219,7 +232,7 @@ export default function MarketPage() {
           <div className="flex flex-wrap gap-2">
             {POOL_ORDER.map((k) => {
               const Icon = POOL_META[k].icon
-              const count = (pools[k]?.items || []).length
+              const count = poolItems(k).length
               return (
                 <button key={k} onClick={() => setActivePool(k)}
                   className={`px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 border transition-colors ${
@@ -267,9 +280,8 @@ export default function MarketPage() {
                         <td className="py-2.5 px-2 font-mono text-gray-400 text-xs">{rawCode}</td>
                         <td className="py-2.5 px-2 text-white font-medium">
                           {q.name}
-                          {srcOf(activePool, rawCode) === 'ai'
-                            ? <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-primary-500/20 text-primary-300 align-middle">AI</span>
-                            : <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-surface-hover text-gray-500 align-middle">人工</span>}
+                          {activePool === 'analysis_ai' && <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-primary-500/20 text-primary-300 align-middle">AI</span>}
+                          {activePool === 'analysis_manual' && <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-surface-hover text-gray-500 align-middle">人工</span>}
                         </td>
                         <td className={`py-2.5 px-2 text-right font-mono ${(q.change_pct||0) > 0 ? 'stock-up' : (q.change_pct||0) < 0 ? 'stock-down' : 'text-gray-300'}`}>{q.current_price?.toFixed(2)}</td>
                         <td className={`py-2.5 px-2 text-right font-mono ${(q.change_pct||0) > 0 ? 'stock-up' : (q.change_pct||0) < 0 ? 'stock-down' : 'text-gray-300'}`}>{(q.change_pct||0) > 0 ? '+' : ''}{q.change_pct?.toFixed(2)}%</td>
@@ -292,6 +304,8 @@ export default function MarketPage() {
             <div className="text-center py-6">
               <button onClick={() => loadQuotes(poolCodes(activePool))} className="btn-primary text-sm">加载{POOL_META[activePool].name}行情</button>
             </div>
+          ) : activePool === 'analysis_ai' ? (
+            <p className="text-gray-500 text-center py-8 text-sm">分析·AI 池为空 · 由<button onClick={() => navigate('/quant')} className="text-primary-400">交易策略/量化</button>自动管理选股</p>
           ) : (
             <p className="text-gray-500 text-center py-8 text-sm">{POOL_META[activePool].name}为空，搜索股票后点击 ⭐ 加入</p>
           )
@@ -337,34 +351,6 @@ export default function MarketPage() {
           })()
         )}
 
-        {/* 量化 */}
-        {activePool === 'quant' && (
-          (() => {
-            const p = pools.quant || { items: [] }
-            return (p.items || []).length === 0 ? (
-              <p className="text-gray-500 text-center py-8 text-sm">暂无量化策略 · <button onClick={() => navigate('/quant')} className="text-primary-400">去量化交易</button></p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead><tr className="text-gray-500 text-xs border-b border-surface-border">
-                    <th className="text-left py-2 px-2">策略</th><th className="text-left py-2 px-2">模板</th>
-                    <th className="text-left py-2 px-2">状态</th><th className="text-left py-2 px-2">绩效</th>
-                  </tr></thead>
-                  <tbody>
-                    {p.items.map((s: any) => (
-                      <tr key={s.id} className="border-b border-surface-border/50 hover:bg-surface-hover cursor-pointer" onClick={() => navigate('/quant')}>
-                        <td className="py-2.5 px-2 text-gray-200">{s.name}</td>
-                        <td className="py-2.5 px-2 text-gray-500">{s.template_name || '-'}</td>
-                        <td className="py-2.5 px-2"><span className="text-[11px] px-1.5 py-0.5 bg-surface-hover rounded text-gray-400">{s.status}</span></td>
-                        <td className="py-2.5 px-2 text-gray-400 text-xs">{s.performance_metrics?.total_return != null ? `收益 ${s.performance_metrics.total_return}` : '-'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )
-          })()
-        )}
       </div>
     </div>
   )
